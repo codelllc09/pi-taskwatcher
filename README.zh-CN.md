@@ -2,7 +2,7 @@
 
 # pi-task-status
 
-把**任意外部进程**的进度显示为 pi 底栏实时芯片——进程只需写一个 JSON 文件。
+在 pi 底栏实时显示**任意外部进程**的进度——进程只需写一个 JSON 文件。
 任何语言、任何机器、无需 pi 侧接线。
 
 ```
@@ -37,7 +37,7 @@ task_status.py done --id asr      # 还有：rm / ls
 ## 规则
 
 `✓` 完成 · `◆` 进行中 · 静默 180 秒标 `stale` · 30 分钟无更新隐藏 · 最多
-3 个芯片（新的在前）。`/task-status` 列全部；`/task-status clear` 清空。
+3 个任务（新的在前）。`/task-status` 列全部；`/task-status clear` 清空。
 
 ## 环境变量
 
