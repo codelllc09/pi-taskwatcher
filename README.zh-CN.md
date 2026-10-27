@@ -47,7 +47,7 @@ task_status.py done --id asr      # 还有：rm / ls
 ## 安装
 
 ```bash
-pi install git:github.com/codelllc09/pi-task-status
+pi install npm:pi-task-status
 ```
 
 ## 许可证

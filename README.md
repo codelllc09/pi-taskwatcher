@@ -48,7 +48,7 @@ wipes.
 ## Install
 
 ```bash
-pi install git:github.com/codelllc09/pi-task-status
+pi install npm:pi-task-status
 ```
 
 ## License
