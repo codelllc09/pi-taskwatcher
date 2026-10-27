@@ -2,85 +2,47 @@
 
 # pi-task-status
 
-把**任意外部进程的进度**显示为 pi 底栏的实时芯片——转写批任务、下载、爬虫、
-训练任务都行。进程不需要是 pi 的任务、不需要是 pi 的子进程、甚至不需要在
-同一台机器上：它只要写一个小 JSON 文件。
+把**任意外部进程**的进度显示为 pi 底栏实时芯片——进程只需写一个 JSON 文件。
+任何语言、任何机器、无需 pi 侧接线。
 
 ```
-✓ Convert batch 153/153 100%    ◆ Transcribe 16/153 10% · RTF 0.06 · 3.4h left
+✓ Convert 153/153 100%   ◆ Transcribe 16/153 10% · 3.4h left
 ```
 
-现有的 pi 后台任务类扩展管理的都是「pi 自己派生的任务」；这个扩展方向相反：
-**你自己的脚本往里汇报**，靠的是与语言无关的文件约定。
+## 约定
 
-## 工作方式
-
-1. 你的进程写 `~/.pi/agent/status/<id>.json`：
+`~/.pi/agent/status/<id>.json`，每 5 秒轮询。建议原子写（临时文件 + rename）；
+半截 JSON 会被容错跳过。
 
 ```json
-{
-  "id": "asr-batch",
-  "label": "Transcribe",
-  "done": 16,
-  "total": 153,
-  "note": "RTF 0.06 · 3.4h left",
-  "updated": 1761234567
-}
-```
-
-2. 扩展轮询该目录，在底栏渲染最多 3 个芯片（任何会显示 `setStatus` 芯片的
-   底栏都兼容——内置底栏、pi-cc-extensions 等）
-
-任何语言都能直接写：
-
-```python
-# python
-json.dump({"id": "crawl", "label": "Crawl", "done": n, "total": total,
-           "updated": int(time.time())},
-          open(f"{STATUS_DIR}/crawl.json", "w"))
+{"id":"asr","label":"Transcribe","done":16,"total":153,"note":"3.4h left","updated":1761234567}
 ```
 
 ```bash
-# shell
-echo '{"id":"crawl","label":"Crawl","done":1,"total":10,"updated":'$(date +%s)'}' \
-  > ~/.pi/agent/status/crawl.json
+echo '{"id":"x","label":"L","done":1,"total":10,"updated":'$(date +%s)'}' \
+  > ~/.pi/agent/status/x.json
 ```
 
-推荐先写临时文件再 rename（原子写）；读到半截 JSON 会被容错跳过。
+## CLI
 
-## 配套 CLI
-
-`scripts/task_status.py` 封装了这套约定：
+`scripts/task_status.py` 封装以上约定：
 
 ```bash
-task_status.py bump --id asr --label Transcribe --total 153   # 每完成一个单元 +1
+task_status.py bump --id asr --label Transcribe --total 153   # 每单元 +1
 task_status.py set  --id asr --done 16 --total 153 --note "剩3.4h"
-task_status.py sync --id asr --total 153 --done-file out/_done.json  # 从文件统计
-task_status.py done --id asr
-task_status.py rm   --id asr
-task_status.py ls
+task_status.py sync --id asr --total 153 --done-file out/_done.json
+task_status.py done --id asr      # 还有：rm / ls
 ```
 
-## 显示规则
+## 规则
 
-| 状态 | 标记 |
-|---|---|
-| done ≥ total | `✓` 绿色 |
-| 进行中 | `◆` 强调色 |
-| 超 180 秒未更新且未完成 | ` · stale` 黄色 |
-| 超 30 分钟未更新 | 自动隐藏 |
+`✓` 完成 · `◆` 进行中 · 静默 180 秒标 `stale` · 30 分钟无更新隐藏 · 最多
+3 个芯片（新的在前）。`/task-status` 列全部；`/task-status clear` 清空。
 
-`/task-status` 列出全部（含隐藏）；`/task-status clear` 清空所有状态文件。
+## 环境变量
 
-## 配置
-
-| 环境变量 | 默认值 |
-|---|---|
-| `PI_TASK_STATUS_DIR` | `~/.pi/agent/status` |
-| `PI_TASK_MAX` | `3` |
-| `PI_TASK_REFRESH_MS` | `5000` |
-| `PI_TASK_HIDE_MIN` | `30` |
-| `PI_TASK_STALE_SEC` | `180` |
+`PI_TASK_STATUS_DIR` · `PI_TASK_MAX` · `PI_TASK_REFRESH_MS` ·
+`PI_TASK_HIDE_MIN` · `PI_TASK_STALE_SEC`
 
 ## 安装
 
