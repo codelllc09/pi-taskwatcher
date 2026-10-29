@@ -2,7 +2,7 @@
   "name": "pi-task-status",
   "version": "0.1.1",
   "description": "Show any external process's progress as live chips in the Pi footer via a language-agnostic JSON file convention",
-  "license": "0BSD",
+  "license": "MIT",
   "keywords": [
     "pi",
     "pi-extension",

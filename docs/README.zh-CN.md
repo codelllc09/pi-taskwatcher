@@ -52,4 +52,4 @@ pi install npm:pi-task-status
 
 ## 许可证
 
-0BSD — 随便用，不用署名。
+MIT — 见 [LICENSE](../LICENSE)。

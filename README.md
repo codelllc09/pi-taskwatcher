@@ -53,4 +53,4 @@ pi install npm:pi-task-status
 
 ## License
 
-0BSD — do whatever you want, no attribution required.
+MIT — see [LICENSE](LICENSE).
