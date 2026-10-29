@@ -50,13 +50,18 @@ reach for it before launching any long batch job — no user reminder needed.
 ## Conversation isolation
 
 `STATUS_DIR` is machine-global, but tasks belong to the conversation that
-created them: tool writes stamp `owner=<sessionId>`, footer chips and
-watchdog nudges are limited to own + ownerless tasks, and an ownerless
-stale task is claimed by exactly one session before nudging — no
-cross-conversation duplicate wakes. `/task-status` lists everything,
-marking foreign rows `[other]`. `PI_TASK_ISOLATION=0` opts out; scripts
-keep ownership via `--owner` (CLI) or the `owner` JSON field (recipe in
-the set result). Ownerless files behave exactly like before.
+created them: tool writes stamp `owner=<sessionId>` (creation paths only —
+an existing un-stamped file is never adopted implicitly), and the footer
+and watchdog consider **only this conversation's tasks**. Un-stamped
+files (legacy writers, manual echoes) may belong to another conversation,
+so they are not shown or watched here — but they are never silent: each
+one is announced once with the claim recipe, and `/task-status` lists
+everything (`[other]`, `[ownerless]`). Adopt with
+`/task-status claim <id>` (explicit), give back with `release <id>`.
+`PI_TASK_SHOW_OWNERLESS=1` restores legacy display + exactly-one-session
+claim-and-nudge; `PI_TASK_ISOLATION=0` disables isolation entirely.
+Scripts keep ownership via `--owner` (CLI) or the `owner` JSON field
+(recipe in the set result).
 
 ## Watchdog
 
@@ -99,7 +104,7 @@ pi install npm:pi-task-status
 ## Tests
 
 ```bash
-npm test   # 77 assertions: tool roundtrip, watchdog lifecycle, anti-freeze,
+npm test   # 88 assertions: tool roundtrip, watchdog lifecycle, anti-freeze,
            # env sanitization, zombie-proof exit, failure surfacing
 ```
 

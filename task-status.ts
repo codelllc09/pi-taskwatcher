@@ -76,12 +76,14 @@
  *    STATUS_DIR is machine-global, but tasks belong to the conversation
  *    that created them. The extension stamps owner=<sessionId> on every
  *    tool write (and the educator recipe teaches scripts to preserve it).
- *    Rendering and watchdog nudges are limited to own + ownerless tasks;
- *    an ownerless stale task is claimed (owner stamped) by the first
- *    session that would nudge it — cross-session duplicate wakes are gone.
- *    /task-status still lists everything, marking foreign rows [other].
- *    PI_TASK_ISOLATION=0 disables (also off when no session id is
- *    available, e.g. bare test harnesses).
+ *    STRICT isolation: the footer and watchdog consider only tasks owned
+ *    by THIS conversation. Ownerless files (legacy writers, manual echoes)
+ *    are ignored unless claimed (/task-status claim <id> — adoption also
+ *    happens implicitly on any tool bump/done) or opted in globally with
+ *    PI_TASK_SHOW_OWNERLESS=1 (legacy display + claim-then-nudge).
+ *    /task-status still lists everything, marking foreign rows [other] and
+ *    unowned rows [ownerless]. PI_TASK_ISOLATION=0 disables isolation
+ *    entirely (also off when no session id is available, e.g. harnesses).
  *
  * ─────────────────────────────────────────────────────────────
  * 8. Hardening: never block, never spin, never fail silently
@@ -299,16 +301,23 @@ export default function (pi: ExtensionAPI) {
 	let mySession: string | undefined; // owning conversation id (§7)
 	const badFiles = new Map<string, BadFile>();
 	const announcedBad = new Set<string>();
+	const announcedNoown = new Set<string>(); // un-attributed tasks already announced (§7)
 	const announcedTrunc = new Set<string>(); // single-element use: dir truncation
 	const nudgedFor = new Map<string, number>(); // id → task.updated at nudge time
 	const wakeFailAnnounced = new Set<string>();
 	const cliPath = resolveCli();
 
-	// Conversation isolation (§7): off when no session id or opted out
+	// Conversation isolation (§7): off when no session id or opted out.
+	// STRICT by default: only this conversation's tasks are rendered/nudged;
+	// ownerless files need PI_TASK_SHOW_OWNERLESS=1 or an explicit claim.
 	const isolationOn = () => !!mySession && (process.env.PI_TASK_ISOLATION ?? "1") !== "0";
-	/** True when this session may display/nudge the task (own or ownerless). */
-	const ownTask = (t: Task) => !isolationOn() || !t.owner || t.owner === mySession;
-	/** Stamp this session as owner on create; never steal an existing owner. */
+	const showOwnerless = () => (process.env.PI_TASK_SHOW_OWNERLESS ?? "0") === "1";
+	/** True when this session may display/nudge the task. */
+	const ownTask = (t: Task) =>
+		!isolationOn() || t.owner === mySession || (!t.owner && showOwnerless());
+	/** Stamp this session as owner on CREATION only — an existing un-stamped
+	 *  file may belong to another conversation (legacy writer) and must never
+	 *  be adopted implicitly; explicit adoption is /task-status claim. */
 	const stampOwner = (t: Task) => {
 		if (isolationOn() && !t.owner) t.owner = mySession;
 	};
@@ -427,6 +436,34 @@ export default function (pi: ExtensionAPI) {
 		}
 	};
 
+	// ── un-attributed tasks: hidden by default, but never silently — announce
+	//    once per file with the claim recipe (§7; user: “不能静默无视，需要提醒”) ──
+	const announceUnattributed = (ctx: any, allTasks: Task[]) => {
+		if (!isolationOn() || showOwnerless()) return;
+		let announced = 0;
+		const present = new Set<string>();
+		for (const t of allTasks) {
+			const id = t.id ?? "";
+			if (!id) continue;
+			if (t.owner) { present.add(id); continue; }
+			present.add(id);
+			if (announcedNoown.has(id) || announced >= MAX_ANNOUNCE_PER_TICK) continue;
+			announcedNoown.add(id);
+			announced++;
+			const counts = (t.total ?? 0) > 0 ? ` ${t.done ?? 0}/${t.total}` : "";
+			const note = t.note ? ` · ${t.note}` : "";
+			safeNotify(
+				ctx,
+				`[task-status] un-attributed task "${t.label ?? id}"${counts}${note} — not shown or watched in this session. ` +
+					`If it belongs here: /task-status claim ${id} · otherwise it's another conversation's (legacy writer). Full list: /task-status`,
+				"warning",
+			);
+		}
+		for (const id of [...announcedNoown.keys()]) {
+			if (!present.has(id)) announcedNoown.delete(id); // file gone → re-arm
+		}
+	};
+
 	// ── one async refresh pass: read once, feed render + watchdog + announce ──
 	const refresh = async (ctx: any) => {
 		if (inFlight) return; // never overlap passes
@@ -435,7 +472,8 @@ export default function (pi: ExtensionAPI) {
 		try {
 			const { tasks, truncated } = await readStatusDir(badFiles);
 			consecFails = 0;
-			const visibleTasks = tasks.filter(isVisible).filter(ownTask); // §7: own + ownerless only
+			announceUnattributed(ctx, tasks);
+			const visibleTasks = tasks.filter(isVisible).filter(ownTask); // §7: own only (strict)
 			announceProblems(ctx, truncated);
 			renderTasks(ctx, visibleTasks);
 			await wakeStale(ctx, visibleTasks);
@@ -492,7 +530,8 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("task-status", {
 		description: "Show background task progress; 'clear' removes all status files",
 		handler: async (args: string, ctx: any) => {
-			const arg = (args ?? "").trim().toLowerCase();
+			const arg = (args ?? "").trim();
+			const sub = arg.split(/\s+/);
 			if (arg === "clear") {
 				let n = 0;
 				try {
@@ -510,9 +549,50 @@ export default function (pi: ExtensionAPI) {
 				}
 				badFiles.clear();
 				announcedBad.clear();
+				announcedNoown.clear();
 				announcedTrunc.clear();
 				await refresh(ctx);
 				ctx.ui.notify(`Removed ${n} task status file(s)`, "info");
+				return;
+			}
+
+			// claim <id> / release <id>: adopt an ownerless task into this
+			// conversation (or give it back) — the chip appears only for the owner
+			if ((sub[0] === "claim" || sub[0] === "release") && sub[1]) {
+				const id = sub[1];
+				if (!ID_RE.test(id)) {
+					ctx.ui.notify(`invalid id "${id}"`, "error");
+					return;
+				}
+				if (!mySession) {
+					ctx.ui.notify("claim needs a session id (isolation unavailable)", "error");
+					return;
+				}
+				let t: Task | undefined;
+				try {
+					t = JSON.parse(await fsp.readFile(path.join(STATUS_DIR, `${id}.json`), "utf-8")) as Task;
+				} catch {
+					t = undefined;
+				}
+				if (!t || typeof t.done !== "number" || typeof t.total !== "number") {
+					ctx.ui.notify(`no readable task "${id}" — see /task-status`, "error");
+					return;
+				}
+				if (sub[0] === "claim") {
+					if (t.owner && t.owner !== mySession) {
+						ctx.ui.notify(`"${id}" belongs to another conversation — claim only works on [ownerless] rows`, "error");
+						return;
+					}
+					t.owner = mySession;
+					await writeStatusAtomic(t);
+					await refresh(ctx);
+					ctx.ui.notify(`claimed "${id}" — its chip now belongs to this conversation`, "info");
+				} else {
+					delete t.owner; // give it back to ownerless
+					await writeStatusAtomic(t);
+					await refresh(ctx);
+					ctx.ui.notify(`released "${id}" — ownerless again (hidden here unless PI_TASK_SHOW_OWNERLESS=1)`, "info");
+				}
 				return;
 			}
 
@@ -526,9 +606,13 @@ export default function (pi: ExtensionAPI) {
 				const stale = isStale(t) ? " [stale]" : "";
 				const hid = t.updated && nowSec() - t.updated > HIDE_AFTER_S ? " [hidden]" : "";
 				const other = t.owner && mySession && t.owner !== mySession ? " [other]" : "";
+				const noown = !t.owner && mySession ? " [ownerless]" : "";
 				const unit = t.unit ? t.unit : "";
 				const note = t.note ? `  ${t.note}` : "";
-				rows.push(`${isDone(t) ? "✓" : "◆"} ${t.label ?? t.id}  ${t.done}/${t.total}${unit} ${pctOf(t)}%${stale}${hid}${other}${note}`);
+				rows.push(`${isDone(t) ? "✓" : "◆"} ${t.label ?? t.id}  ${t.done}/${t.total}${unit} ${pctOf(t)}%${stale}${hid}${other}${noown}${note}`);
+			}
+			if (mySession && tasks.some((t) => !t.owner)) {
+				rows.push("  ℹ ownerless rows: /task-status claim <id> to adopt into this conversation");
 			}
 			if (badFiles.size > 0) {
 				rows.push("");
@@ -618,13 +702,14 @@ export default function (pi: ExtensionAPI) {
 				case "bump": {
 					let t = prev;
 					if (!t) {
-						if (params.total && params.total >= 1) t = { id, label: params.label ?? id, done: 0, total: params.total };
-						else return toolError(`unknown task "${id}" — call action "set" first (or pass total to create it here)`);
+						if (params.total && params.total >= 1) {
+							t = { id, label: params.label ?? id, done: 0, total: params.total };
+							stampOwner(t); // creation path only
+						} else return toolError(`unknown task "${id}" — call action "set" first (or pass total to create it here)`);
 					}
 					if (params.total && params.total >= 1) t.total = params.total;
 					if (params.label) t.label = params.label;
 					if (params.note) t.note = params.note;
-					stampOwner(t); // §7: stamp only when absent — never steal
 					const step = params.n && params.n >= 1 ? params.n : 1;
 					t.done = Math.min((t.done ?? 0) + step, t.total ?? (t.done ?? 0) + step);
 					t.updated = nowSec();
@@ -647,7 +732,6 @@ export default function (pi: ExtensionAPI) {
 					}
 					t.done = t.total ?? params.total ?? 0;
 					if (params.note) t.note = params.note;
-					stampOwner(t); // §7
 					t.updated = nowSec();
 					try {
 						await writeStatusAtomic(t);

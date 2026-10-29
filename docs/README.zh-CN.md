@@ -49,11 +49,15 @@ task_status.py done --id asr      # 还有：rm / ls
 ## 对话隔离
 
 状态目录是机器级全局的，但任务归属于创建它的对话：工具写入打上
-`owner=<sessionId>`，footer 芯片与看门狗唤醒都限于"自己的 + 无主"任务；
-无主的卡死任务在唤醒前先被恰好一个会话认领——不会跨对话重复唤醒。
-`/task-status` 仍列出全部，外部对话的任务标 `[other]`。
-`PI_TASK_ISOLATION=0` 关闭；脚本侧用 `--owner`（CLI）或 JSON 的 `owner`
-字段保持归属（set 返回里有配方）。无主文件的行为与从前完全一致。
+`owner=<sessionId>`（只在创建路径盖章——已存在的未标记文件绝不被隐式
+收养），footer 与看门狗**只看本对话的任务**。未标记文件（旧代码写的、
+手工 echo 的）可能属于其他对话，因此这里不显示、不唤醒——但绝不静默：
+每个未标记任务首次出现时公告一次并附认领方法，`/task-status` 也列出
+全部（`[other]` / `[ownerless]`）。用 `/task-status claim <id>` 显式收养，
+`release <id>` 归还。`PI_TASK_SHOW_OWNERLESS=1` 恢复旧行为（显示 +
+恰好一个会话认领后唤醒）；`PI_TASK_ISOLATION=0` 彻底关闭隔离。
+脚本侧用 `--owner`（CLI）或 JSON 的 `owner` 字段保持归属（set 返回里
+有配方）。
 
 ## 看门狗
 
@@ -89,7 +93,7 @@ pi install npm:pi-task-status
 ## 测试
 
 ```bash
-npm test   # 77 项断言：工具往返、看门狗生命周期、防冻结、
+npm test   # 88 项断言：工具往返、看门狗生命周期、防冻结、
            # 环境消毒、僵尸进程防护、失败暴露
 ```
 
