@@ -57,7 +57,10 @@ files (legacy writers, manual echoes) may belong to another conversation,
 so they are not shown or watched here — but they are never silent: each
 one is announced once with the claim recipe, and `/task-status` lists
 everything (`[other]`, `[ownerless]`). Adopt with
-`/task-status claim <id>` (explicit), give back with `release <id>`.
+`/task-status claim <id>` or the tool action `task_progress {action:"claim",
+id}` — the owning conversation's agent can reclaim pre-upgrade tasks in one
+call (bump/done results note un-attributed tasks with the claim recipe);
+give back with `release <id>`.
 `PI_TASK_SHOW_OWNERLESS=1` restores legacy display + exactly-one-session
 claim-and-nudge; `PI_TASK_ISOLATION=0` disables isolation entirely.
 Scripts keep ownership via `--owner` (CLI) or the `owner` JSON field
@@ -104,7 +107,7 @@ pi install npm:pi-task-status
 ## Tests
 
 ```bash
-npm test   # 88 assertions: tool roundtrip, watchdog lifecycle, anti-freeze,
+npm test   # 93 assertions: tool roundtrip, watchdog lifecycle, anti-freeze,
            # env sanitization, zombie-proof exit, failure surfacing
 ```
 

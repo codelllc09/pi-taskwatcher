@@ -640,11 +640,14 @@ export default function (pi: ExtensionAPI) {
 				"multi-item processing loops), call task_progress with action=set so the user gets a live footer " +
 				"progress bar; wire per-unit updates into the script itself (task_status.py bump or direct JSON " +
 				"writes — recipe in the set result); call action=done when the job finishes.",
+			"Un-attributed tasks (no owner) are invisible in this session. If a task result notes a task is " +
+				"un-attributed and THIS conversation created or dispatches it (e.g. before an upgrade), adopt it " +
+				"with task_progress action=claim; never claim another conversation's task.",
 		],
 		parameters: Type.Object({
 			action: Type.Union(
-				[Type.Literal("set"), Type.Literal("bump"), Type.Literal("done"), Type.Literal("remove")],
-				{ description: "set = create/replace task; bump = done += n; done = mark complete; remove = delete status file" },
+				[Type.Literal("set"), Type.Literal("bump"), Type.Literal("done"), Type.Literal("remove"), Type.Literal("claim"), Type.Literal("release")],
+				{ description: "set = create/replace task; bump = done += n; done = mark complete; remove = delete status file; claim = adopt an un-attributed task into this conversation (only ones this conversation created/dispatched, e.g. pre-upgrade tasks — never another conversation's); release = strip owner" },
 			),
 			id: Type.String({ description: "unique task id, filename-safe [A-Za-z0-9._-] (e.g. asr-batch); becomes the status filename" }),
 			label: Type.Optional(Type.String({ description: "footer display name (≤12 chars advised; default = id or previous label)" })),
@@ -755,8 +758,52 @@ export default function (pi: ExtensionAPI) {
 					text = `removed status for "${id}"`;
 					break;
 				}
+				case "claim": {
+					if (!mySession) return toolError("claim needs a session id (isolation unavailable in this session)");
+					if (!prev || typeof prev.done !== "number" || typeof prev.total !== "number") {
+						return toolError(`no readable task "${id}" — create it with action=set first`);
+					}
+					if (prev.owner && prev.owner !== mySession) {
+						return toolError(`"${id}" belongs to another conversation — claim only un-attributed tasks (or your own)`);
+					}
+					prev.owner = mySession;
+					try {
+						await writeStatusAtomic(prev);
+					} catch (e) {
+						return toolError(`cannot write status file ${fp}: ${String(e).slice(0, 160)}`);
+					}
+					await refresh(uiCtx);
+					text = `claimed "${id}" — its chip and watchdog now belong to this conversation`;
+					break;
+				}
+				case "release": {
+					if (!prev) return toolError(`no such task "${id}"`);
+					delete prev.owner;
+					try {
+						await writeStatusAtomic(prev);
+					} catch (e) {
+						return toolError(`cannot write status file ${fp}: ${String(e).slice(0, 160)}`);
+					}
+					await refresh(uiCtx);
+					text = `released "${id}" — ownerless again (hidden here unless PI_TASK_SHOW_OWNERLESS=1)`;
+					break;
+				}
 				default:
 					return toolError(`unknown action "${params.action}"`);
+			}
+			// Un-attributed hint: the owning conversation's agent knows it created the
+			// task and claims in one call; a foreign agent sees the same note and leaves
+			// it alone (guideline). Never stamped implicitly — §7.
+			if (
+				prev &&
+				!prev.owner &&
+				isolationOn() &&
+				!showOwnerless() &&
+				(params.action === "bump" || params.action === "done")
+			) {
+				text +=
+					`\nNOTE: "${id}" is un-attributed in this session — its chip/watchdog are inactive here. ` +
+					`If THIS conversation created or dispatches it (e.g. pre-upgrade), adopt: task_progress {"action":"claim","id":"${id}"}.`;
 			}
 			return { content: [{ type: "text" as const, text }], details: {} };
 		},

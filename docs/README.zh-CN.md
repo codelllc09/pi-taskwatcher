@@ -53,7 +53,9 @@ task_status.py done --id asr      # 还有：rm / ls
 收养），footer 与看门狗**只看本对话的任务**。未标记文件（旧代码写的、
 手工 echo 的）可能属于其他对话，因此这里不显示、不唤醒——但绝不静默：
 每个未标记任务首次出现时公告一次并附认领方法，`/task-status` 也列出
-全部（`[other]` / `[ownerless]`）。用 `/task-status claim <id>` 显式收养，
+全部（`[other]` / `[ownerless]`）。用 `/task-status claim <id>` 或工具动作
+`task_progress {action:"claim", id}` 显式收养——创建方会话的 agent 可一步
+认回升级前创建的任务（bump/done 的返回会提示未标记任务及认领方法）；
 `release <id>` 归还。`PI_TASK_SHOW_OWNERLESS=1` 恢复旧行为（显示 +
 恰好一个会话认领后唤醒）；`PI_TASK_ISOLATION=0` 彻底关闭隔离。
 脚本侧用 `--owner`（CLI）或 JSON 的 `owner` 字段保持归属（set 返回里

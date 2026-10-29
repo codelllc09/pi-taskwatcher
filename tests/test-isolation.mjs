@@ -98,6 +98,18 @@ ok(listing.includes("[ownerless]"), "unowned task marked [ownerless]");
 ok(listing.includes("claim <id>"), "claim hint shown");
 
 console.log("6. claim / no implicit adoption / release");
+// tool-level claim (the agent path): adopt un-attributed, refuse foreign
+writeFileSync(`${DIR}/toolc.json`, JSON.stringify({ id: "toolc", label: "ToolC", done: 1, total: 4, updated: Math.floor(Date.now() / 1000) }));
+let r = await A.tool.execute("t", { action: "claim", id: "toolc" }, undefined, undefined, A.ctx);
+ok(!r.isError && r.content[0].text.includes("claimed"), "tool claim adopts un-attributed task");
+ok(JSON.parse(readFileSync(`${DIR}/toolc.json`, "utf-8")).owner === "sess-A", "owner stamped by tool claim");
+r = await B.tool.execute("t", { action: "claim", id: "toolc" }, undefined, undefined, B.ctx);
+ok(r.isError && r.content[0].text.includes("another conversation"), "tool claim refuses foreign-owned");
+// bump on an un-attributed task: works, no steal, but the result carries the claim hint
+writeFileSync(`${DIR}/hint.json`, JSON.stringify({ id: "hint", label: "Hint", done: 0, total: 2, updated: Math.floor(Date.now() / 1000) }));
+r = await A.tool.execute("t", { action: "bump", id: "hint" }, undefined, undefined, A.ctx);
+ok(!r.isError && r.content[0].text.includes("un-attributed") && r.content[0].text.includes('"claim"'), "bump result carries the adopt hint");
+ok(!("owner" in JSON.parse(readFileSync(`${DIR}/hint.json`, "utf-8"))), "bump still does not steal");
 await A.cmd.def.handler("claim noown", A.ctx); // noown now owned by whoever claimed in step 4
 const ownerNow = JSON.parse(readFileSync(`${DIR}/noown.json`, "utf-8")).owner;
 const claimedBy = ownerNow;
