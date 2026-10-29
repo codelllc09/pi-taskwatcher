@@ -81,6 +81,8 @@ def cmd_set(a) -> int:
         d["note"] = a.note
     if a.unit:
         d["unit"] = a.unit
+    if getattr(a, 'owner', None) and not d.get('owner'):
+        d['owner'] = a.owner
     _write(a.id, d)
     if not a.quiet:
         print(_fmt(d, d.get("unit", "")))
@@ -108,6 +110,8 @@ def cmd_bump(a) -> int:
         d["note"] = a.note
     if a.unit:
         d["unit"] = a.unit
+    if getattr(a, 'owner', None) and not d.get('owner'):
+        d['owner'] = a.owner
     _write(a.id, d)
     if not a.quiet:
         print(_fmt(d, d.get("unit", "")))
@@ -122,6 +126,8 @@ def cmd_done(a) -> int:
     d["done"] = int(d.get("total", 0))
     if a.note is not None:
         d["note"] = a.note
+    if getattr(a, 'owner', None) and not d.get('owner'):
+        d['owner'] = a.owner
     _write(a.id, d)
     if not a.quiet:
         print(_fmt(d, d.get("unit", "")))
@@ -203,6 +209,7 @@ def main() -> int:
         p.add_argument("--total", type=int, help="total units")
         p.add_argument("--note", help="extra info (≤24 chars advised)")
         p.add_argument("--unit", help="unit, e.g. lec/posts/MB (listing only)")
+        p.add_argument("--owner", help="owning session id (conversation isolation; absent = ownerless)")
         p.add_argument("-q", "--quiet", action="store_true", help="no output")
 
     p = sub.add_parser("set", help="write/update progress")

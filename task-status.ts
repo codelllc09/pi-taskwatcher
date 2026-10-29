@@ -71,7 +71,20 @@
  *    jobs" from model habit into extension behavior.
  *
  * ─────────────────────────────────────────────────────────────
- * 7. Hardening: never block, never spin, never fail silently
+ * 7. Conversation isolation (multi-session safety)
+ *
+ *    STATUS_DIR is machine-global, but tasks belong to the conversation
+ *    that created them. The extension stamps owner=<sessionId> on every
+ *    tool write (and the educator recipe teaches scripts to preserve it).
+ *    Rendering and watchdog nudges are limited to own + ownerless tasks;
+ *    an ownerless stale task is claimed (owner stamped) by the first
+ *    session that would nudge it — cross-session duplicate wakes are gone.
+ *    /task-status still lists everything, marking foreign rows [other].
+ *    PI_TASK_ISOLATION=0 disables (also off when no session id is
+ *    available, e.g. bare test harnesses).
+ *
+ * ─────────────────────────────────────────────────────────────
+ * 8. Hardening: never block, never spin, never fail silently
  *
  *    - All filesystem access is async (fs/promises): the TUI event loop is
  *      never blocked by a slow or networked STATUS_DIR.
@@ -146,6 +159,8 @@ type Task = {
 	total?: number;
 	note?: string;
 	updated?: number;
+	/** Owning conversation id (conversation isolation, §7); absent = ownerless */
+	owner?: string;
 	/** Optional unit ("lec", "posts", "MB"); only shown by /task-status listing */
 	unit?: string;
 };
@@ -281,12 +296,22 @@ export default function (pi: ExtensionAPI) {
 	let lastLine = "";
 	let inFlight = false;
 	let consecFails = 0;
+	let mySession: string | undefined; // owning conversation id (§7)
 	const badFiles = new Map<string, BadFile>();
 	const announcedBad = new Set<string>();
 	const announcedTrunc = new Set<string>(); // single-element use: dir truncation
 	const nudgedFor = new Map<string, number>(); // id → task.updated at nudge time
 	const wakeFailAnnounced = new Set<string>();
 	const cliPath = resolveCli();
+
+	// Conversation isolation (§7): off when no session id or opted out
+	const isolationOn = () => !!mySession && (process.env.PI_TASK_ISOLATION ?? "1") !== "0";
+	/** True when this session may display/nudge the task (own or ownerless). */
+	const ownTask = (t: Task) => !isolationOn() || !t.owner || t.owner === mySession;
+	/** Stamp this session as owner on create; never steal an existing owner. */
+	const stampOwner = (t: Task) => {
+		if (isolationOn() && !t.owner) t.owner = mySession;
+	};
 
 	const safeNotify = (ctx: any, msg: string, kind: "info" | "error" = "info") => {
 		try {
@@ -334,8 +359,8 @@ export default function (pi: ExtensionAPI) {
 		}
 	};
 
-	// ── watchdog: one nudge per update-level, re-armed by progress ─────────
-	const wakeStale = (ctx: any, visibleTasks: Task[]) => {
+	// ── watchdog: one nudge per update-level, re-armed by progress, session-scoped ──
+	const wakeStale = async (ctx: any, visibleTasks: Task[]) => {
 		if (!WAKE_ENABLED || typeof pi.sendUserMessage !== "function") return;
 		let sent = 0;
 		const alive = new Set<string>();
@@ -344,10 +369,24 @@ export default function (pi: ExtensionAPI) {
 			if (!id) continue;
 			alive.add(id);
 			if (isDone(t) || !t.updated) continue;
+			if (!ownTask(t)) continue; // foreign conversations handle their own
 			const idleS = nowSec() - t.updated;
 			if (idleS < WAKE_AFTER_S) continue;
 			if (nudgedFor.get(id) === t.updated) continue; // already nudged at this level
 			if (sent >= MAX_NUDGES_PER_TICK) continue; // next tick drains the rest
+			// Claim ownerless tasks before nudging: exactly one session wakes.
+			// Re-read after the write; losing the claim race means skip (tiny
+			// window, worst case one duplicate nudge — documented trade-off).
+			if (isolationOn() && !t.owner) {
+				try {
+					stampOwner(t);
+					await writeStatusAtomic(t);
+					const reread = JSON.parse(await fsp.readFile(path.join(STATUS_DIR, `${id}.json`), "utf-8")) as Task;
+					if (reread.owner && reread.owner !== mySession) continue; // lost the race
+				} catch {
+					/* claim failed: nudge anyway — degraded but visible */
+				}
+			}
 			const label = t.label ?? id;
 			const counts = (t.total ?? 0) > 0 ? ` ${t.done ?? 0}/${t.total}` : "";
 			const note = t.note ? ` · ${t.note}` : "";
@@ -396,10 +435,10 @@ export default function (pi: ExtensionAPI) {
 		try {
 			const { tasks, truncated } = await readStatusDir(badFiles);
 			consecFails = 0;
-			const visibleTasks = tasks.filter(isVisible);
+			const visibleTasks = tasks.filter(isVisible).filter(ownTask); // §7: own + ownerless only
 			announceProblems(ctx, truncated);
 			renderTasks(ctx, visibleTasks);
-			wakeStale(ctx, visibleTasks);
+			await wakeStale(ctx, visibleTasks);
 		} catch (e) {
 			// readStatusDir is designed not to throw; this is a belt-and-braces net
 			consecFails++;
@@ -430,6 +469,11 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_start", async (_event, ctx) => {
 		uiCtx = ctx;
+		try {
+			mySession = ctx?.sessionManager?.getSessionId?.();
+		} catch {
+			mySession = undefined; // isolation degrades to global (old behaviour)
+		}
 		// Defensive re-arm: repeated session_start must not stack timers
 		schedule(ctx, true);
 		if (envIssues.length > 0) {
@@ -481,9 +525,10 @@ export default function (pi: ExtensionAPI) {
 			for (const t of tasks) {
 				const stale = isStale(t) ? " [stale]" : "";
 				const hid = t.updated && nowSec() - t.updated > HIDE_AFTER_S ? " [hidden]" : "";
+				const other = t.owner && mySession && t.owner !== mySession ? " [other]" : "";
 				const unit = t.unit ? t.unit : "";
 				const note = t.note ? `  ${t.note}` : "";
-				rows.push(`${isDone(t) ? "✓" : "◆"} ${t.label ?? t.id}  ${t.done}/${t.total}${unit} ${pctOf(t)}%${stale}${hid}${note}`);
+				rows.push(`${isDone(t) ? "✓" : "◆"} ${t.label ?? t.id}  ${t.done}/${t.total}${unit} ${pctOf(t)}%${stale}${hid}${other}${note}`);
 			}
 			if (badFiles.size > 0) {
 				rows.push("");
@@ -549,20 +594,22 @@ export default function (pi: ExtensionAPI) {
 					const done = Math.max(0, Math.min(params.done ?? prev?.done ?? 0, total));
 					const t: Task = { id, label, done, total, updated: nowSec() };
 					if (params.note) t.note = params.note;
+					stampOwner(t); // §7: this conversation owns tool-created tasks
 					try {
 						await writeStatusAtomic(t);
 					} catch (e) {
 						return toolError(`cannot write status file ${fp}: ${String(e).slice(0, 160)}`);
 					}
 					await refresh(uiCtx);
+					const ownerField = t.owner ? `,"owner":"${t.owner}"` : "";
 					text = [
 						`✓ Progress chip live in footer: ◆ ${label} ${done}/${total} ${Math.round((done / total) * 100)}%`,
 						``,
 						`A tool call cannot fire mid-script — wire live updates into the job itself:`,
 						`  per completed unit, inside the script, run ONE of:`,
-						`    python3 ${cliPath} bump ${id}`,
+						`    python3 ${cliPath} bump ${id}${t.owner ? ` --owner ${t.owner}` : ""}`,
 						`    or write JSON directly (atomic tmp+rename; unix-seconds timestamp):`,
-						`      {"id":"${id}","label":"${label}","done":N,"total":${total},"note":"...","updated":$(date +%s)} → ${fp}`,
+						`      {"id":"${id}","label":"${label}","done":N,"total":${total}${ownerField},"note":"...","updated":$(date +%s)} → ${fp}`,
 						`When finished: task_progress {"action":"done","id":"${id}"} (✓ green; auto-hides 30 min after last update; >${STALE_AFTER_S}s idle shows "· stale").`,
 						`Watchdog: if this task shows no update for ${Math.round(WAKE_AFTER_S / 60)} min, the extension wakes the agent (queued, never interrupts) to investigate — script-side bumps keep it quiet.`,
 					].join("\n");
@@ -577,6 +624,7 @@ export default function (pi: ExtensionAPI) {
 					if (params.total && params.total >= 1) t.total = params.total;
 					if (params.label) t.label = params.label;
 					if (params.note) t.note = params.note;
+					stampOwner(t); // §7: stamp only when absent — never steal
 					const step = params.n && params.n >= 1 ? params.n : 1;
 					t.done = Math.min((t.done ?? 0) + step, t.total ?? (t.done ?? 0) + step);
 					t.updated = nowSec();
@@ -599,6 +647,7 @@ export default function (pi: ExtensionAPI) {
 					}
 					t.done = t.total ?? params.total ?? 0;
 					if (params.note) t.note = params.note;
+					stampOwner(t); // §7
 					t.updated = nowSec();
 					try {
 						await writeStatusAtomic(t);

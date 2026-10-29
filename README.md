@@ -47,6 +47,17 @@ the agent can create and drive tasks itself. The `set` result embeds the
 script-side wiring recipe, and a system-prompt guideline makes the agent
 reach for it before launching any long batch job — no user reminder needed.
 
+## Conversation isolation
+
+`STATUS_DIR` is machine-global, but tasks belong to the conversation that
+created them: tool writes stamp `owner=<sessionId>`, footer chips and
+watchdog nudges are limited to own + ownerless tasks, and an ownerless
+stale task is claimed by exactly one session before nudging — no
+cross-conversation duplicate wakes. `/task-status` lists everything,
+marking foreign rows `[other]`. `PI_TASK_ISOLATION=0` opts out; scripts
+keep ownership via `--owner` (CLI) or the `owner` JSON field (recipe in
+the set result). Ownerless files behave exactly like before.
+
 ## Watchdog
 
 A visible task that stops updating for `PI_TASK_WAKE_MIN` minutes (default
@@ -59,7 +70,8 @@ Progress re-arms the nudge. Stuck jobs surface themselves.
 
 `PI_TASK_STATUS_DIR` · `PI_TASK_MAX` · `PI_TASK_REFRESH_MS` (floor 500 ms) ·
 `PI_TASK_HIDE_MIN` · `PI_TASK_STALE_SEC` · `PI_TASK_WAKE` ("0" disables the
-watchdog) · `PI_TASK_WAKE_MIN` · `PI_TASK_MAX_FILE_KB` · `PI_TASK_MAX_FILES`
+watchdog) · `PI_TASK_WAKE_MIN` · `PI_TASK_MAX_FILE_KB` · `PI_TASK_MAX_FILES` ·
+`PI_TASK_ISOLATION`
 
 All values are sanitized: garbage/zero/negative fall back to the default
 and the ignored value is reported at session start.
@@ -87,7 +99,7 @@ pi install npm:pi-task-status
 ## Tests
 
 ```bash
-npm test   # 39 assertions: tool roundtrip, watchdog lifecycle, anti-freeze,
+npm test   # 77 assertions: tool roundtrip, watchdog lifecycle, anti-freeze,
            # env sanitization, zombie-proof exit, failure surfacing
 ```
 

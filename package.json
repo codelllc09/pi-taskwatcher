@@ -29,7 +29,7 @@
     "typebox": "*"
   },
   "scripts": {
-    "test": "node tests/test-extension.mjs && node tests/test-hardening.mjs"
+    "test": "node tests/test-extension.mjs && node tests/test-hardening.mjs && node tests/test-e2e.mjs && node tests/test-isolation.mjs"
   },
   "files": [
     "task-status.ts",
