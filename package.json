@@ -34,9 +34,13 @@
   "files": [
     "task-status.ts",
     "scripts/",
+    "!scripts/__pycache__",
     "docs/",
     "tests/",
     "README.md",
     "LICENSE"
-  ]
+  ],
+  "engines": {
+    "node": ">=22"
+  }
 }

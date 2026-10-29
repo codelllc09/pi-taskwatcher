@@ -322,7 +322,7 @@ export default function (pi: ExtensionAPI) {
 		if (isolationOn() && !t.owner) t.owner = mySession;
 	};
 
-	const safeNotify = (ctx: any, msg: string, kind: "info" | "error" = "info") => {
+	const safeNotify = (ctx: any, msg: string, kind: "info" | "warning" | "error" = "info") => {
 		try {
 			ctx?.ui?.notify?.(msg, kind);
 		} catch {
