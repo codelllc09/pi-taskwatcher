@@ -74,23 +74,42 @@ ok(r.isError && r.content[0].text.includes("total"), "set without total rejected
 r = await call({ action: "bump", id: "ghost" });
 ok(r.isError && r.content[0].text.includes('"set" first'), "bump unknown rejected with hint");
 
+console.log("schema-invalid existing file is not rewritten as garbage");
+writeFileSync(`${DIR}/junk.json`, JSON.stringify({ id: "junk", label: "Junk", foo: 1 })); // lacks done/total
+r = await call({ action: "bump", id: "junk" });
+ok(r.isError, "bump on schema-invalid file errors instead of fabricating");
+const junkAfter = JSON.parse(readFileSync(`${DIR}/junk.json`, "utf-8"));
+ok(junkAfter.foo === 1 && junkAfter.done === undefined, "junk file left untouched");
+r = await call({ action: "bump", id: "junk", total: 5 });
+ok(!r.isError && r.content[0].text.includes("1/5"), "bump with total rebuilds it cleanly");
+r = await call({ action: "remove", id: "junk" });
+ok(!r.isError, "cleanup junk");
+
 console.log("watchdog lifecycle");
 const now = Math.floor(Date.now() / 1000);
 // 10 min stale: past WAKE_AFTER_S (5 min) but inside HIDE_AFTER_S (30 min) — the nudge window
 writeFileSync(`${DIR}/stuck.json`, JSON.stringify({ id: "stuck", label: "Stuck", done: 2, total: 10, updated: now - 600 }));
-await new Promise((r2) => setTimeout(r2, 900));
+await new Promise((r2) => setTimeout(r2, 1300));
 ok(toolCalls.sendUserMessage.length === 1, `stale task nudged exactly once (got ${toolCalls.sendUserMessage.length})`);
 ok(toolCalls.sendUserMessage[0]?.[0]?.includes('"Stuck" 2/10'), "nudge carries facts");
 ok(toolCalls.sendUserMessage[0]?.[1]?.deliverAs === "followUp", "nudge queued as followUp");
-await new Promise((r2) => setTimeout(r2, 900));
+await new Promise((r2) => setTimeout(r2, 1300));
 ok(toolCalls.sendUserMessage.length === 1, "dedupe holds across ticks");
 writeFileSync(`${DIR}/stuck.json`, JSON.stringify({ id: "stuck", label: "Stuck", done: 5, total: 10, updated: Math.floor(Date.now() / 1000) - 601 }));
-await new Promise((r2) => setTimeout(r2, 900));
+await new Promise((r2) => setTimeout(r2, 1300));
 ok(toolCalls.sendUserMessage.length === 2, "re-armed after real progress stalled again");
 writeFileSync(`${DIR}/fin.json`, JSON.stringify({ id: "fin", label: "Fin", done: 7, total: 7, updated: now - 600 }));
-await new Promise((r2) => setTimeout(r2, 900));
+await new Promise((r2) => setTimeout(r2, 1300));
 ok(!toolCalls.sendUserMessage.some(([m]) => m.includes('"Fin"')), "done tasks never nudged");
+
+console.log("shutdown is final: ticks stop, no zombie re-arm");
 await handlers.session_shutdown?.();
+const hookAfter = (globalThis.__taskStatusTestHookCalls ??= []);
+let afterCount = 0;
+globalThis.__taskStatusTestHook = (e) => { if (e === "refresh") afterCount++; };
+writeFileSync(`${DIR}/zombie.json`, JSON.stringify({ id: "zombie", label: "Z", done: 1, total: 9, updated: Math.floor(Date.now() / 1000) - 600 }));
+await new Promise((r2) => setTimeout(r2, 1400));
+ok(afterCount === 0, `no refresh after shutdown (got ${afterCount})`);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -416,7 +416,9 @@ export default function (pi: ExtensionAPI) {
 	};
 
 	// ── self-rescheduling timer: no overlap possible, unref'd, re-arm-safe ──
+	let stopped = false;
 	const schedule = (ctx: any, immediate = false) => {
+		if (stopped) return; // session_shutdown must be final — no zombie re-arm
 		if (refreshTimer) clearTimeout(refreshTimer);
 		const delay = consecFails >= FAIL_NOTIFY_EVERY ? BACKOFF_MS : REFRESH_MS;
 		refreshTimer = setTimeout(async () => {
@@ -436,6 +438,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", async () => {
+		stopped = true; // beats the race: a callback mid-flight cannot re-arm
 		if (refreshTimer) {
 			clearTimeout(refreshTimer);
 			refreshTimer = undefined;
@@ -528,7 +531,10 @@ export default function (pi: ExtensionAPI) {
 			}
 			let prev: Task | undefined;
 			try {
-				prev = JSON.parse(await fsp.readFile(path.join(STATUS_DIR, `${id}.json`), "utf-8")) as Task;
+				const parsed = JSON.parse(await fsp.readFile(path.join(STATUS_DIR, `${id}.json`), "utf-8")) as Task;
+				// Schema-check: a corrupt/partial existing file must not leak garbage
+				// into bump/done math — treat it as absent (error paths handle it)
+				if (typeof parsed.done === "number" && typeof parsed.total === "number") prev = parsed;
 			} catch {
 				prev = undefined; // absent task is normal, not an error
 			}
