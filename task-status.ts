@@ -17,7 +17,8 @@
  *    Writers (any of these):
  *      python: json.dump({...}, open(path, "w"))
  *      shell:  echo '{"id":"x","label":"L","done":1,"total":10,"updated":'$(date +%s)'}' > path
- *    Atomic writes recommended (tmp + rename); partial JSON is tolerated and skipped.
+ *    Atomic writes recommended (tmp + rename); transient half-written JSON is
+ *    tolerated for a few ticks, then surfaced (see §7).
  *    A companion CLI ships in scripts/task_status.py (set/bump/done/sync/rm/ls).
  *
  * ─────────────────────────────────────────────────────────────
@@ -32,60 +33,111 @@
  * ─────────────────────────────────────────────────────────────
  * 3. Command
  *
- *    /task-status           refresh + list all tasks (incl. hidden)
+ *    /task-status           refresh + list all tasks (incl. hidden) + problem files
  *    /task-status clear     delete every status file
  *
  * ─────────────────────────────────────────────────────────────
- * 4. Environment overrides
+ * 4. Environment overrides (all sanitized: garbage/0/negative fall back to
+ *    the default, and the ignored value is reported once at session start —
+ *    a bad PI_TASK_REFRESH_MS can never spin the loop at 0 ms)
  *
  *    PI_TASK_STATUS_DIR     status dir (default ~/.pi/agent/status)
- *    PI_TASK_MAX            max chips shown (default 3)
- *    PI_TASK_REFRESH_MS     poll interval ms (default 5000)
+ *    PI_TASK_MAX            max chips shown (default 3, min 1, max 20)
+ *    PI_TASK_REFRESH_MS     poll interval ms (default 5000, min 500, max 600000)
  *    PI_TASK_HIDE_MIN       hide threshold minutes (default 30)
  *    PI_TASK_STALE_SEC      stale threshold seconds (default 180)
+ *    PI_TASK_WAKE           "0" disables the watchdog (default on)
+ *    PI_TASK_WAKE_MIN       nudge threshold minutes (default 5)
+ *    PI_TASK_MAX_FILE_KB    per-file size cap before flagging (default 64)
+ *    PI_TASK_MAX_FILES      max status files read per tick (default 200)
  *
  * ─────────────────────────────────────────────────────────────
  * 5. Agent tool `task_progress` (set | bump | done | remove)
  *
- *    Registered via registerTool so the agent can drive the same
- *    status files without knowing the CLI path. The "set" result
- *    embeds the wiring recipe (script-side bump / direct JSON
- *    writes) — point-of-use education, not just a confirmation.
- *    promptGuidelines adds one bullet to the system prompt so batch
- *    tasks surface the tool without the user mentioning it.
+ *    Registered via registerTool so the agent can drive the same status
+ *    files without knowing the CLI path. The "set" result embeds the wiring
+ *    recipe (script-side bump / direct JSON writes) — point-of-use
+ *    education, not just a confirmation. promptGuidelines adds one bullet
+ *    to the system prompt so batch tasks surface the tool unprompted.
  *
  * ─────────────────────────────────────────────────────────────
  * 6. Stale wakeup — the watchdog half of the loop
  *
- *    A task that has shown no update for PI_TASK_WAKE_MIN minutes
- *    (default 5) and is not done gets ONE nudge per update-level:
- *    pi.sendUserMessage(..., {deliverAs:"followUp"}) wakes the idle
- *    agent (or queues behind a busy run — never interrupts) with the
- *    stalled facts + remediation hints. Progress on the task re-arms
- *    the nudge. This turns "check on stuck jobs" from model habit
- *    into extension behavior.
+ *    A visible task with no update for PI_TASK_WAKE_MIN minutes (default 5)
+ *    and not done gets ONE nudge per update-level: pi.sendUserMessage(...,
+ *    {deliverAs:"followUp"}) wakes the idle agent (or queues behind a busy
+ *    run — never interrupts) with the stalled facts + remediation hints.
+ *    Progress on the task re-arms the nudge. This turns "check on stuck
+ *    jobs" from model habit into extension behavior.
  *
- *    PI_TASK_WAKE          "0" disables the watchdog (default on)
- *    PI_TASK_WAKE_MIN      nudge threshold minutes (default 5)
+ * ─────────────────────────────────────────────────────────────
+ * 7. Hardening: never block, never spin, never fail silently
+ *
+ *    - All filesystem access is async (fs/promises): the TUI event loop is
+ *      never blocked by a slow or networked STATUS_DIR.
+ *    - The poll loop is a self-rescheduling setTimeout (never overlapping),
+ *      timer.unref()'d (a leaked timer can never keep the process alive),
+ *      and re-armed defensively on repeated session_start.
+ *    - Per-file size cap and per-tick file-count cap bound worst-case work.
+ *    - Repeated refresh failures back off to 30 s and notify the user on
+ *      every 3rd consecutive failure.
+ *    - Problem files (persistently unparseable, oversized, wrong schema)
+ *      are counted per tick, listed by /task-status, and announced once.
+ *    - Watchdog delivery failures are announced, not swallowed.
  */
 
 import * as fs from "node:fs";
+import * as fsp from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
+// ── Config: sanitized env — garbage/0/negative would spin or kill semantics ──
+const envIssues: string[] = [];
+
+function envNum(name: string, def: number, min: number, max: number): number {
+	const raw = process.env[name];
+	if (raw === undefined) return def;
+	if (raw.trim() === "") {
+		envIssues.push(`${name}="" → ${def}`);
+		return def;
+	}
+	const v = Number(raw);
+	if (!Number.isFinite(v)) {
+		envIssues.push(`${name}="${raw}" not a number → ${def}`);
+		return def;
+	}
+	if (v < min) {
+		envIssues.push(`${name}=${raw} below min ${min} → ${def}`);
+		return def;
+	}
+	if (v > max) {
+		envIssues.push(`${name}=${raw} above max ${max} → clamped to ${max}`);
+		return max;
+	}
+	return v;
+}
 
 const STATUS_DIR = process.env.PI_TASK_STATUS_DIR
 	? process.env.PI_TASK_STATUS_DIR.replace(/^~/, os.homedir())
 	: path.join(os.homedir(), ".pi", "agent", "status");
 
 const STATUS_KEY = "task-progress";
-const MAX_TASKS = Number(process.env.PI_TASK_MAX ?? 3);
-const REFRESH_MS = Number(process.env.PI_TASK_REFRESH_MS ?? 5000);
-const HIDE_AFTER_S = Number(process.env.PI_TASK_HIDE_MIN ?? 30) * 60;
-const STALE_AFTER_S = Number(process.env.PI_TASK_STALE_SEC ?? 180);
+const MAX_TASKS = envNum("PI_TASK_MAX", 3, 1, 20);
+const REFRESH_MS = envNum("PI_TASK_REFRESH_MS", 5000, 500, 600_000);
+const HIDE_AFTER_S = envNum("PI_TASK_HIDE_MIN", 30, 1, 1440) * 60;
+const STALE_AFTER_S = envNum("PI_TASK_STALE_SEC", 180, 5, 86_400);
 const WAKE_ENABLED = (process.env.PI_TASK_WAKE ?? "1") !== "0";
-const WAKE_AFTER_S = Number(process.env.PI_TASK_WAKE_MIN ?? 5) * 60;
+const WAKE_AFTER_S = envNum("PI_TASK_WAKE_MIN", 5, 1, 1440) * 60;
+const MAX_FILE_BYTES = envNum("PI_TASK_MAX_FILE_KB", 64, 1, 4096) * 1024;
+const MAX_FILES = envNum("PI_TASK_MAX_FILES", 200, 1, 10_000);
+
+const BAD_AFTER_TICKS = 5; // consecutive problem ticks before a file is announced
+const FAIL_NOTIFY_EVERY = 3; // notify on every Nth consecutive refresh failure
+const BACKOFF_MS = 30_000; // refresh cadence while repeatedly failing
+const MAX_NUDGES_PER_TICK = 1; // watchdog flood control
+const MAX_ANNOUNCE_PER_TICK = 3; // problem-file announcements per tick
 
 type Task = {
 	id?: string;
@@ -98,39 +150,10 @@ type Task = {
 	unit?: string;
 };
 
+type BadFile = { why: string; count: number };
+
 function nowSec(): number {
 	return Math.floor(Date.now() / 1000);
-}
-
-function statusFiles(): string[] {
-	try {
-		return fs
-			.readdirSync(STATUS_DIR)
-			.filter((n) => n.endsWith(".json"))
-			.map((n) => path.join(STATUS_DIR, n));
-	} catch {
-		return [];
-	}
-}
-
-function readTasks(includeHidden = false): Task[] {
-	const tasks: Task[] = [];
-	for (const fp of statusFiles()) {
-		try {
-			const t = JSON.parse(fs.readFileSync(fp, "utf-8")) as Task;
-			if (typeof t.done === "number" && typeof t.total === "number") {
-				if (!t.id) t.id = path.basename(fp, ".json");
-				tasks.push(t);
-			}
-		} catch {
-			// half-written JSON: skip, retry next poll
-		}
-	}
-	const now = nowSec();
-	const visible = includeHidden
-		? tasks
-		: tasks.filter((t) => !t.updated || now - t.updated <= HIDE_AFTER_S);
-	return visible.sort((a, b) => (b.updated ?? 0) - (a.updated ?? 0));
 }
 
 /** Completion percent (0-100; 0 when total = 0). */
@@ -150,22 +173,82 @@ function isStale(t: Task): boolean {
 	return nowSec() - t.updated > STALE_AFTER_S;
 }
 
-/** Read one task by id (undefined when missing/unreadable). */
-function readTask(id: string): Task | undefined {
-	try {
-		return JSON.parse(fs.readFileSync(path.join(STATUS_DIR, `${id}.json`), "utf-8")) as Task;
-	} catch {
-		return undefined;
+function isVisible(t: Task): boolean {
+	return !t.updated || nowSec() - t.updated <= HIDE_AFTER_S;
+}
+
+function bumpBad(bad: Map<string, BadFile>, file: string, why: string): void {
+	const e = bad.get(file);
+	if (e) {
+		e.count++;
+		e.why = why;
+	} else {
+		bad.set(file, { why, count: 1 });
 	}
 }
 
+/**
+ * One async pass over STATUS_DIR. Never throws: directory-level errors
+ * return an empty result (missing dir legitimately means "no tasks");
+ * per-file problems are accumulated into `bad` with consecutive counts.
+ */
+async function readStatusDir(bad: Map<string, BadFile>): Promise<{ tasks: Task[]; truncated: number }> {
+	const tasks: Task[] = [];
+	let names: string[];
+	try {
+		names = await fsp.readdir(STATUS_DIR);
+	} catch {
+		bad.clear();
+		return { tasks, truncated: 0 };
+	}
+	const jsons = names.filter((n) => n.endsWith(".json"));
+	const truncated = Math.max(0, jsons.length - MAX_FILES);
+	const nameSet = new Set(jsons);
+	for (const k of [...bad.keys()]) if (!nameSet.has(k)) bad.delete(k);
+
+	for (const n of jsons.slice(0, MAX_FILES)) {
+		const fp = path.join(STATUS_DIR, n);
+		try {
+			const st = await fsp.stat(fp);
+			if (st.size > MAX_FILE_BYTES) {
+				bumpBad(bad, n, `oversized ${st.size} B > ${MAX_FILE_BYTES} B`);
+				continue;
+			}
+			const t = JSON.parse(await fsp.readFile(fp, "utf-8")) as Task;
+			if (typeof t.done === "number" && typeof t.total === "number") {
+				bad.delete(n);
+				if (!t.id) t.id = path.basename(n, ".json");
+				tasks.push(t);
+			} else {
+				bumpBad(bad, n, "JSON lacks numeric done/total");
+			}
+		} catch {
+			// half-written file mid atomic-rename is normal; count and surface
+			// only when the problem persists (BAD_AFTER_TICKS consecutive ticks)
+			bumpBad(bad, n, "unreadable / invalid JSON");
+		}
+	}
+	tasks.sort((a, b) => (b.updated ?? 0) - (a.updated ?? 0));
+	return { tasks, truncated };
+}
+
+let dirEnsured = false;
+
 /** Atomic status write (tmp + rename), per the documented convention. */
-function writeStatus(t: Task): void {
-	fs.mkdirSync(STATUS_DIR, { recursive: true });
+async function writeStatusAtomic(t: Task): Promise<void> {
+	if (!dirEnsured) {
+		await fsp.mkdir(STATUS_DIR, { recursive: true });
+		dirEnsured = true;
+	}
 	const fp = path.join(STATUS_DIR, `${t.id}.json`);
 	const tmp = `${fp}.${process.pid}.tmp`;
-	fs.writeFileSync(tmp, JSON.stringify(t));
-	fs.renameSync(tmp, fp);
+	try {
+		await fsp.writeFile(tmp, JSON.stringify(t));
+		await fsp.rename(tmp, fp);
+	} catch (e) {
+		dirEnsured = false; // dir may have vanished — re-ensure next time
+		throw e;
+	}
 }
 
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
@@ -174,26 +257,55 @@ function toolError(msg: string) {
 	return { content: [{ type: "text" as const, text: `ERROR: ${msg}` }], details: {}, isError: true };
 }
 
-export default function (pi: ExtensionAPI) {
-	let timer: ReturnType<typeof setInterval> | undefined;
-	let lastLine = "";
-	// UI context for immediate re-render from the agent tool (poll covers it within REFRESH_MS anyway)
-	let uiCtx: any;
-
-	const renderNow = () => {
-		if (!uiCtx) return;
+/** Locate the companion CLI for the educator text (probe known installs). */
+function resolveCli(): string {
+	const cands = [
+		path.join(os.homedir(), ".pi", "agent", "scripts", "task_status.py"),
+		path.join(os.homedir(), ".pi", "agent", "npm", "node_modules", "pi-task-status", "scripts", "task_status.py"),
+	];
+	for (const c of cands) {
 		try {
-			render(uiCtx);
+			fs.accessSync(c);
+			return c;
 		} catch {
-			/* ctx invalidated: poll will retry */
+			/* try next */
+		}
+	}
+	return cands[0]; // canonical path; the JSON recipe still works without it
+}
+
+export default function (pi: ExtensionAPI) {
+	// ── loop state (all per-instance) ─────────────────────────────────────
+	let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+	let uiCtx: any;
+	let lastLine = "";
+	let inFlight = false;
+	let consecFails = 0;
+	const badFiles = new Map<string, BadFile>();
+	const announcedBad = new Set<string>();
+	const announcedTrunc = new Set<string>(); // single-element use: dir truncation
+	const nudgedFor = new Map<string, number>(); // id → task.updated at nudge time
+	const wakeFailAnnounced = new Set<string>();
+	const cliPath = resolveCli();
+
+	const safeNotify = (ctx: any, msg: string, kind: "info" | "error" = "info") => {
+		try {
+			ctx?.ui?.notify?.(msg, kind);
+		} catch {
+			/* notification must never take the loop down */
 		}
 	};
 
-	const render = (ctx: any) => {
-		const tasks = readTasks().slice(0, MAX_TASKS);
+	// ── render: pure, in-memory — zero filesystem work ────────────────────
+	const renderTasks = (ctx: any, visibleTasks: Task[]) => {
+		const tasks = visibleTasks.slice(0, MAX_TASKS);
 		if (tasks.length === 0) {
 			if (lastLine !== "") {
-				ctx.ui.setStatus(STATUS_KEY, undefined);
+				try {
+					ctx.ui.setStatus(STATUS_KEY, undefined);
+				} catch {
+					/* ctx invalidated */
+				}
 				lastLine = "";
 			}
 			return;
@@ -211,63 +323,122 @@ export default function (pi: ExtensionAPI) {
 			return `${marker} ${label}${counts}${note}${warn}`;
 		});
 		const line = parts.join(theme.fg("dim", "   "));
-		// Skip identical updates to avoid needless TUI redraws
 		if (line !== lastLine) {
-			ctx.ui.setStatus(STATUS_KEY, line);
+			// Skip identical updates to avoid needless TUI redraws
+			try {
+				ctx.ui.setStatus(STATUS_KEY, line);
+			} catch {
+				/* ctx invalidated */
+			}
 			lastLine = line;
 		}
 	};
 
-	// ── 6. Stale wakeup: one nudge per update-level, re-armed by progress ──
-	// Keyed by task id → the task.updated value at nudge time; a new update
-	// (bump/done/set) changes `updated` and re-arms. Pruned when tasks vanish.
-	const nudgedFor = new Map<string, number>();
-
-	const wakeStaleTasks = () => {
+	// ── watchdog: one nudge per update-level, re-armed by progress ─────────
+	const wakeStale = (ctx: any, visibleTasks: Task[]) => {
 		if (!WAKE_ENABLED || typeof pi.sendUserMessage !== "function") return;
-		const tasks = readTasks(); // visible only: nudge what the user can still see stalling
+		let sent = 0;
 		const alive = new Set<string>();
-		for (const t of tasks) {
+		for (const t of visibleTasks) {
 			const id = t.id ?? "";
+			if (!id) continue;
 			alive.add(id);
-			if (!id || isDone(t) || !t.updated) continue;
+			if (isDone(t) || !t.updated) continue;
 			const idleS = nowSec() - t.updated;
 			if (idleS < WAKE_AFTER_S) continue;
 			if (nudgedFor.get(id) === t.updated) continue; // already nudged at this level
-			nudgedFor.set(id, t.updated);
+			if (sent >= MAX_NUDGES_PER_TICK) continue; // next tick drains the rest
 			const label = t.label ?? id;
 			const counts = (t.total ?? 0) > 0 ? ` ${t.done ?? 0}/${t.total}` : "";
 			const note = t.note ? ` · ${t.note}` : "";
 			const min = Math.max(1, Math.round(idleS / 60));
-			pi.sendUserMessage(
-				`⚠️ [task-status] "${label}"${counts}${note} has shown no progress for ${min} min. ` +
-					`If it should still be running: check the process (ps aux | grep …) and its logs for the stall cause, then resume reporting with task_progress. ` +
-					`If it finished silently or was abandoned: close it out with task_progress {"action":"done"|"remove","id":"${id}"}.`,
-				{ deliverAs: "followUp" },
-			);
+			try {
+				pi.sendUserMessage(
+					`⚠️ [task-status] "${label}"${counts}${note} has shown no progress for ${min} min. ` +
+						`If it should still be running: check the process (ps aux | grep …) and its logs for the stall cause, then resume reporting with task_progress. ` +
+						`If it finished silently or was abandoned: close it out with task_progress {"action":"done"|"remove","id":"${id}"}.`,
+					{ deliverAs: "followUp" },
+				);
+				nudgedFor.set(id, t.updated);
+				sent++;
+			} catch (e) {
+				if (!wakeFailAnnounced.has(id)) {
+					wakeFailAnnounced.add(id);
+					safeNotify(ctx, `[task-status] watchdog nudge for "${id}" failed: ${String(e).slice(0, 120)}`, "error");
+				}
+			}
 		}
 		for (const id of [...nudgedFor.keys()]) {
 			if (!alive.has(id)) nudgedFor.delete(id);
 		}
 	};
 
+	// ── problem announcement: first sight only, bounded per tick ───────────
+	const announceProblems = (ctx: any, truncated: number) => {
+		let announced = 0;
+		for (const [file, e] of badFiles) {
+			if (e.count < BAD_AFTER_TICKS || announcedBad.has(file) || announced >= MAX_ANNOUNCE_PER_TICK) continue;
+			announcedBad.add(file);
+			announced++;
+			safeNotify(ctx, `[task-status] ignoring ${file}: ${e.why} (×${e.count} ticks) — see /task-status`, "error");
+		}
+		if (truncated > 0 && !announcedTrunc.has("t")) {
+			announcedTrunc.add("t");
+			safeNotify(ctx, `[task-status] ${truncated} status file(s) beyond PI_TASK_MAX_FILES=${MAX_FILES} are not being read`, "error");
+		}
+	};
+
+	// ── one async refresh pass: read once, feed render + watchdog + announce ──
+	const refresh = async (ctx: any) => {
+		if (inFlight) return; // never overlap passes
+		inFlight = true;
+		;(globalThis as any).__taskStatusTestHook?.("refresh"); // test seam: cadence/failure observation
+		try {
+			const { tasks, truncated } = await readStatusDir(badFiles);
+			consecFails = 0;
+			const visibleTasks = tasks.filter(isVisible);
+			announceProblems(ctx, truncated);
+			renderTasks(ctx, visibleTasks);
+			wakeStale(ctx, visibleTasks);
+		} catch (e) {
+			// readStatusDir is designed not to throw; this is a belt-and-braces net
+			consecFails++;
+			if (consecFails % FAIL_NOTIFY_EVERY === 0) {
+				safeNotify(
+					ctx,
+					`[task-status] refresh failed ${consecFails}× (${String(e).slice(0, 120)}) — backing off to ${BACKOFF_MS / 1000}s`,
+					"error",
+				);
+			}
+		} finally {
+			inFlight = false;
+		}
+	};
+
+	// ── self-rescheduling timer: no overlap possible, unref'd, re-arm-safe ──
+	const schedule = (ctx: any, immediate = false) => {
+		if (refreshTimer) clearTimeout(refreshTimer);
+		const delay = consecFails >= FAIL_NOTIFY_EVERY ? BACKOFF_MS : REFRESH_MS;
+		refreshTimer = setTimeout(async () => {
+			await refresh(ctx);
+			schedule(ctx);
+		}, immediate ? 0 : delay);
+		refreshTimer.unref?.(); // a leaked timer must never keep the process alive
+	};
+
 	pi.on("session_start", async (_event, ctx) => {
 		uiCtx = ctx;
-		render(ctx);
-		timer = setInterval(() => {
-			try {
-				render(ctx);
-				wakeStaleTasks();
-			} catch {
-				/* ctx invalidated: stay silent */
-			}
-		}, REFRESH_MS);
+		// Defensive re-arm: repeated session_start must not stack timers
+		schedule(ctx, true);
+		if (envIssues.length > 0) {
+			safeNotify(ctx, `[task-status] ignored invalid env: ${envIssues.join("; ")}`, "error");
+		}
 	});
 
 	pi.on("session_shutdown", async () => {
-		if (timer) {
-			clearInterval(timer);
-			timer = undefined;
+		if (refreshTimer) {
+			clearTimeout(refreshTimer);
+			refreshTimer = undefined;
 		}
 	});
 
@@ -277,34 +448,48 @@ export default function (pi: ExtensionAPI) {
 			const arg = (args ?? "").trim().toLowerCase();
 			if (arg === "clear") {
 				let n = 0;
-				for (const fp of statusFiles()) {
-					try {
-						fs.unlinkSync(fp);
-						n++;
-					} catch {
-						/* ignore */
+				try {
+					for (const f of await fsp.readdir(STATUS_DIR)) {
+						if (!f.endsWith(".json")) continue;
+						try {
+							await fsp.unlink(path.join(STATUS_DIR, f));
+							n++;
+						} catch {
+							/* count what we could remove */
+						}
 					}
+				} catch {
+					/* dir missing: nothing to clear */
 				}
-				lastLine = "";
-				render(ctx);
+				badFiles.clear();
+				announcedBad.clear();
+				announcedTrunc.clear();
+				await refresh(ctx);
 				ctx.ui.notify(`Removed ${n} task status file(s)`, "info");
 				return;
 			}
 
-			const all = readTasks(true);
-			if (all.length === 0) {
-				ctx.ui.notify(`No task statuses (dir: ${STATUS_DIR})`, "info");
-				return;
+			await refresh(ctx);
+			const { tasks, truncated } = await readStatusDir(badFiles);
+			const rows: string[] = [];
+			if (tasks.length === 0 && badFiles.size === 0) {
+				rows.push(`No task statuses (dir: ${STATUS_DIR})`);
 			}
-			const rows = all.map((t) => {
+			for (const t of tasks) {
 				const stale = isStale(t) ? " [stale]" : "";
 				const hid = t.updated && nowSec() - t.updated > HIDE_AFTER_S ? " [hidden]" : "";
 				const unit = t.unit ? t.unit : "";
 				const note = t.note ? `  ${t.note}` : "";
-				return `${isDone(t) ? "✓" : "◆"} ${t.label ?? t.id}  ${t.done}/${t.total}${unit} ${pctOf(t)}%${stale}${hid}${note}`;
-			});
+				rows.push(`${isDone(t) ? "✓" : "◆"} ${t.label ?? t.id}  ${t.done}/${t.total}${unit} ${pctOf(t)}%${stale}${hid}${note}`);
+			}
+			if (badFiles.size > 0) {
+				rows.push("");
+				rows.push("Problem files:");
+				for (const [file, e] of badFiles) rows.push(`  ✗ ${file} — ${e.why} (×${e.count})`);
+			}
+			if (truncated > 0) rows.push(`  ⚠ ${truncated} file(s) beyond PI_TASK_MAX_FILES=${MAX_FILES} unread`);
+			if (envIssues.length > 0) rows.push(`  ⚠ env ignored: ${envIssues.join("; ")}`);
 			ctx.ui.notify(rows.join("\n"), "info");
-			render(ctx);
 		},
 	});
 
@@ -320,28 +505,33 @@ export default function (pi: ExtensionAPI) {
 		promptSnippet: "task_progress — live footer progress bar for long-running batch tasks (set/bump/done/remove)",
 		promptGuidelines: [
 			"Before launching any long-running batch job (transcription, media conversion, batch downloads, " +
-			"multi-item processing loops), call task_progress with action=set so the user gets a live footer " +
-			"progress bar; wire per-unit updates into the script itself (task_status.py bump or direct JSON " +
-			"writes — recipe in the set result); call action=done when the job finishes.",
+				"multi-item processing loops), call task_progress with action=set so the user gets a live footer " +
+				"progress bar; wire per-unit updates into the script itself (task_status.py bump or direct JSON " +
+				"writes — recipe in the set result); call action=done when the job finishes.",
 		],
 		parameters: Type.Object({
 			action: Type.Union(
 				[Type.Literal("set"), Type.Literal("bump"), Type.Literal("done"), Type.Literal("remove")],
-			{ description: "set = create/replace task; bump = done += n; done = mark complete; remove = delete status file" },
-		),
-		id: Type.String({ description: "unique task id, filename-safe [A-Za-z0-9._-] (e.g. asr-batch); becomes the status filename" }),
-		label: Type.Optional(Type.String({ description: "footer display name (≤12 chars advised; default = id or previous label)" })),
-		total: Type.Optional(Type.Number({ description: "total units (required for set; also creates/updates on bump/done)", minimum: 1 })),
-		done: Type.Optional(Type.Number({ description: "set: initial completed count (default 0)", minimum: 0 })),
-		n: Type.Optional(Type.Number({ description: "bump: increment per call (default 1)", minimum: 1 })),
-		note: Type.Optional(Type.String({ description: "short suffix after counts, e.g. \"RTF 0.06 · 3.4h left\" (≤24 chars advised)" })),
-	}),
+				{ description: "set = create/replace task; bump = done += n; done = mark complete; remove = delete status file" },
+			),
+			id: Type.String({ description: "unique task id, filename-safe [A-Za-z0-9._-] (e.g. asr-batch); becomes the status filename" }),
+			label: Type.Optional(Type.String({ description: "footer display name (≤12 chars advised; default = id or previous label)" })),
+			total: Type.Optional(Type.Number({ description: "total units (required for set; also creates/updates on bump/done)", minimum: 1 })),
+			done: Type.Optional(Type.Number({ description: "set: initial completed count (default 0)", minimum: 0 })),
+			n: Type.Optional(Type.Number({ description: "bump: increment per call (default 1)", minimum: 1 })),
+			note: Type.Optional(Type.String({ description: "short suffix after counts, e.g. \"RTF 0.06 · 3.4h left\" (≤24 chars advised)" })),
+		}),
 		async execute(_toolCallId, params) {
 			const id = String(params.id ?? "").trim();
 			if (!ID_RE.test(id)) {
 				return toolError(`invalid id "${id}" — use filename-safe [A-Za-z0-9][A-Za-z0-9._-]{0,63}`);
 			}
-			const prev = readTask(id);
+			let prev: Task | undefined;
+			try {
+				prev = JSON.parse(await fsp.readFile(path.join(STATUS_DIR, `${id}.json`), "utf-8")) as Task;
+			} catch {
+				prev = undefined; // absent task is normal, not an error
+			}
 			const fp = path.join(STATUS_DIR, `${id}.json`);
 			let text: string;
 
@@ -353,14 +543,18 @@ export default function (pi: ExtensionAPI) {
 					const done = Math.max(0, Math.min(params.done ?? prev?.done ?? 0, total));
 					const t: Task = { id, label, done, total, updated: nowSec() };
 					if (params.note) t.note = params.note;
-					writeStatus(t);
-					renderNow();
+					try {
+						await writeStatusAtomic(t);
+					} catch (e) {
+						return toolError(`cannot write status file ${fp}: ${String(e).slice(0, 160)}`);
+					}
+					await refresh(uiCtx);
 					text = [
 						`✓ Progress chip live in footer: ◆ ${label} ${done}/${total} ${Math.round((done / total) * 100)}%`,
 						``,
 						`A tool call cannot fire mid-script — wire live updates into the job itself:`,
 						`  per completed unit, inside the script, run ONE of:`,
-						`    python3 ~/.pi/agent/scripts/task_status.py bump ${id}`,
+						`    python3 ${cliPath} bump ${id}`,
 						`    or write JSON directly (atomic tmp+rename; unix-seconds timestamp):`,
 						`      {"id":"${id}","label":"${label}","done":N,"total":${total},"note":"...","updated":$(date +%s)} → ${fp}`,
 						`When finished: task_progress {"action":"done","id":"${id}"} (✓ green; auto-hides 30 min after last update; >${STALE_AFTER_S}s idle shows "· stale").`,
@@ -380,8 +574,12 @@ export default function (pi: ExtensionAPI) {
 					const step = params.n && params.n >= 1 ? params.n : 1;
 					t.done = Math.min((t.done ?? 0) + step, t.total ?? (t.done ?? 0) + step);
 					t.updated = nowSec();
-					writeStatus(t);
-					renderNow();
+					try {
+						await writeStatusAtomic(t);
+					} catch (e) {
+						return toolError(`cannot write status file ${fp}: ${String(e).slice(0, 160)}`);
+					}
+					await refresh(uiCtx);
 					text = isDone(t)
 						? `✓ ${t.label}: ${t.done}/${t.total} — complete (call action=done or remove to close out)`
 						: `◆ ${t.label}: ${t.done}/${t.total} ${pctOf(t)}%`;
@@ -396,21 +594,30 @@ export default function (pi: ExtensionAPI) {
 					t.done = t.total ?? params.total ?? 0;
 					if (params.note) t.note = params.note;
 					t.updated = nowSec();
-					writeStatus(t);
-					renderNow();
+					try {
+						await writeStatusAtomic(t);
+					} catch (e) {
+						return toolError(`cannot write status file ${fp}: ${String(e).slice(0, 160)}`);
+					}
+					await refresh(uiCtx);
 					text = `✓ ${t.label}: ${t.done}/${t.total} — complete (chip auto-hides after ${Math.round(HIDE_AFTER_S / 60)} min)`;
 					break;
 				}
 				case "remove": {
 					try {
-						fs.unlinkSync(fp);
-					} catch {
+						await fsp.unlink(fp);
+					} catch (e) {
+						if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") {
+							return toolError(`cannot remove status file ${fp}: ${String(e).slice(0, 160)}`);
+						}
 						/* already gone: fine */
 					}
-					renderNow();
+					await refresh(uiCtx);
 					text = `removed status for "${id}"`;
 					break;
 				}
+				default:
+					return toolError(`unknown action "${params.action}"`);
 			}
 			return { content: [{ type: "text" as const, text }], details: {} };
 		},

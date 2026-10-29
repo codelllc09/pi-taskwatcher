@@ -1,6 +1,6 @@
 {
   "name": "pi-task-status",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Show any external process's progress as live chips in the Pi footer via a language-agnostic JSON file convention",
   "license": "MIT",
   "keywords": [
@@ -24,5 +24,19 @@
   "bugs": "https://github.com/codelllc09/pi-task-status/issues",
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
-  }
+  },
+  "devDependencies": {
+    "typebox": "*"
+  },
+  "scripts": {
+    "test": "node tests/test-extension.mjs && node tests/test-hardening.mjs"
+  },
+  "files": [
+    "task-status.ts",
+    "scripts/",
+    "docs/",
+    "tests/",
+    "README.md",
+    "LICENSE"
+  ]
 }

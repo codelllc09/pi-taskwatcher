@@ -89,6 +89,16 @@ def cmd_set(a) -> int:
 
 def cmd_bump(a) -> int:
     d = _read(a.id)
+    if not d:
+        if a.total is not None:
+            d = {"label": a.label or a.id, "total": a.total, "done": 0}
+        else:
+            print(
+                f"no such task: {a.id} "
+                "(bump needs an existing task, or pass --total to create it)",
+                file=sys.stderr,
+            )
+            return 1
     if a.label:
         d["label"] = a.label
     if a.total is not None:
