@@ -10,6 +10,9 @@
  *   5. /task-status lists everything: [other] for foreign, [ownerless] rows
  *   6. claim adopts (A only after claim; claim refuses foreign-owned);
  *      tool bump on ownerless adopts implicitly; release gives it back
+ *   7. ghosts: finished/aged-out ownerless files never announce (no
+ *      haunting of future sessions); live ones still announce; revived
+ *      ones announce again; ghosts stay listed [ownerless]
  */
 import { mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 
@@ -131,6 +134,32 @@ await B.cmd.def.handler("claim adopt", B.ctx);
 ok(JSON.parse(readFileSync(`${DIR}/adopt.json`, "utf-8")).owner === "sess-B", "explicit claim adopts");
 await B.cmd.def.handler("release adopt", B.ctx);
 ok(!("owner" in JSON.parse(readFileSync(`${DIR}/adopt.json`, "utf-8"))), "release strips owner");
+
+console.log("7. ghosts: finished/aged-out ownerless files never announce (no haunting)");
+// ghost-done: the user's exact case — done 3/3, no owner, sits on disk forever
+writeFileSync(`${DIR}/ghost-done.json`, JSON.stringify({ id: "ghost-done", label: "GhostDone", done: 3, total: 3, note: "3/3 完成", updated: Math.floor(Date.now() / 1000) - 3 * 86400 }));
+// ghost-aged: still "in progress" but last updated days ago (outside render window)
+writeFileSync(`${DIR}/ghost-aged.json`, JSON.stringify({ id: "ghost-aged", label: "GhostAged", done: 1, total: 3, updated: Math.floor(Date.now() / 1000) - 86400 }));
+// control: a LIVE ownerless task still announces (never silent)
+writeFileSync(`${DIR}/live2.json`, JSON.stringify({ id: "live2", label: "Live2", done: 1, total: 4, updated: Math.floor(Date.now() / 1000) - 60 }));
+A.notes.length = 0; B.notes.length = 0; A.lines.length = 0;
+await sleep(1600);
+const ghostA = A.notes.filter(([m]) => m.includes("un-attributed"));
+ok(!ghostA.some(([m]) => m.includes("GhostDone")), "done ownerless file NOT announced (the ghost case)");
+ok(!ghostA.some(([m]) => m.includes("GhostAged")), "aged-out ownerless file NOT announced");
+ok(ghostA.some(([m]) => m.includes("claim live2")), "live ownerless task still announced with claim recipe");
+ok(!B.notes.some(([m]) => m.includes("GhostDone")), "B not haunted either");
+ok(!A.lines.some((l) => l?.includes("Ghost")), "ghosts render no chip");
+// ghosts stay visible in the full listing — not silent, just not noisy
+A.notes.length = 0;
+await A.cmd.def.handler("", A.ctx);
+const listing7 = A.notes.map(([m]) => m).join("\n");
+ok(listing7.includes("GhostDone") && listing7.includes("[ownerless]"), "ghost still listed [ownerless] in /task-status");
+// a ghost that comes back to life (rewritten fresh, still ownerless) announces again
+writeFileSync(`${DIR}/ghost-aged.json`, JSON.stringify({ id: "ghost-aged", label: "GhostAged", done: 1, total: 3, updated: Math.floor(Date.now() / 1000) }));
+A.notes.length = 0;
+await sleep(1600);
+ok(A.notes.some(([m]) => m.includes("claim ghost-aged")), "revived ownerless task announces (guard is liveness, not a one-shot)");
 
 await A.handlers.session_shutdown?.();
 await B.handlers.session_shutdown?.();

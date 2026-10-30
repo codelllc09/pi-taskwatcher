@@ -55,8 +55,13 @@ an existing un-stamped file is never adopted implicitly), and the footer
 and watchdog consider **only this conversation's tasks**. Un-stamped
 files (legacy writers, manual echoes) may belong to another conversation,
 so they are not shown or watched here — but they are never silent: each
-one is announced once with the claim recipe, and `/task-status` lists
-everything (`[other]`, `[ownerless]`). Adopt with
+*live* one (still running, inside the render window) is announced once
+with the claim recipe, and `/task-status` lists everything (`[other]`,
+`[ownerless]`). Finished or aged-out ownerless files are ghosts: claiming
+them would be pointless, and re-warning every new session forever would be
+noise — so they are not announced, just listed as `[ownerless]` (delete
+with `task_progress {"action":"remove"}` or `task_status.py rm <id>`).
+Adopt with
 `/task-status claim <id>` or the tool action `task_progress {action:"claim",
 id}` — the owning conversation's agent can reclaim pre-upgrade tasks in one
 call (bump/done results note un-attributed tasks with the claim recipe);

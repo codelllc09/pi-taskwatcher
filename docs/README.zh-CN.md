@@ -52,8 +52,11 @@ task_status.py done --id asr      # 还有：rm / ls
 `owner=<sessionId>`（只在创建路径盖章——已存在的未标记文件绝不被隐式
 收养），footer 与看门狗**只看本对话的任务**。未标记文件（旧代码写的、
 手工 echo 的）可能属于其他对话，因此这里不显示、不唤醒——但绝不静默：
-每个未标记任务首次出现时公告一次并附认领方法，`/task-status` 也列出
-全部（`[other]` / `[ownerless]`）。用 `/task-status claim <id>` 或工具动作
+每个**活着的**未标记任务（进行中、仍在渲染窗口内）首次出现时公告一次
+并附认领方法；已完成或早已过期的未标记文件是“幽灵”——认领毫无意义，
+每个新会话重复警告更是噪音，因此不公告，只列为 `[ownerless]`
+（可用 `task_progress {"action":"remove"}` 或 `task_status.py rm <id>`
+清理）。`/task-status` 列出全部（`[other]` / `[ownerless]`）。用 `/task-status claim <id>` 或工具动作
 `task_progress {action:"claim", id}` 显式收养——创建方会话的 agent 可一步
 认回升级前创建的任务（bump/done 的返回会提示未标记任务及认领方法）；
 `release <id>` 归还。`PI_TASK_SHOW_OWNERLESS=1` 恢复旧行为（显示 +

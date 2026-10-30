@@ -78,9 +78,16 @@
  *    tool write (and the educator recipe teaches scripts to preserve it).
  *    STRICT isolation: the footer and watchdog consider only tasks owned
  *    by THIS conversation. Ownerless files (legacy writers, manual echoes)
- *    are ignored unless claimed (/task-status claim <id> — adoption also
- *    happens implicitly on any tool bump/done) or opted in globally with
+ *    are ignored unless claimed (/task-status claim <id> — never adopted
+ *    implicitly) or opted in globally with
  *    PI_TASK_SHOW_OWNERLESS=1 (legacy display + claim-then-nudge).
+ *    Never silent, but only for the living: each LIVE ownerless task (not
+ *    done, inside the render window) is announced once per session with the
+ *    claim recipe. Finished or aged-out ownerless files are ghosts — there
+ *    is nothing left to claim or watch — so they are NOT announced (a done
+ *    file is never auto-deleted, and per-session memory would otherwise
+ *    re-warn in every future conversation, forever); /task-status still
+ *    lists them as [ownerless].
  *    /task-status still lists everything, marking foreign rows [other] and
  *    unowned rows [ownerless]. PI_TASK_ISOLATION=0 disables isolation
  *    entirely (also off when no session id is available, e.g. harnesses).
@@ -437,7 +444,11 @@ export default function (pi: ExtensionAPI) {
 	};
 
 	// ── un-attributed tasks: hidden by default, but never silently — announce
-	//    once per file with the claim recipe (§7; user: “不能静默无视，需要提醒”) ──
+	//    once per file with the claim recipe (§7; user: “不能静默无视，需要提醒”).
+	//    LIVE tasks only: finished or aged-out ownerless files are ghosts —
+	//    claiming them is pointless, and announcedNoown is per-session memory,
+	//    so announcing dead files would haunt every future conversation forever
+	//    (done files are never auto-deleted). Ghosts stay listed in /task-status. ──
 	const announceUnattributed = (ctx: any, allTasks: Task[]) => {
 		if (!isolationOn() || showOwnerless()) return;
 		let announced = 0;
@@ -448,6 +459,9 @@ export default function (pi: ExtensionAPI) {
 			if (t.owner) { present.add(id); continue; }
 			present.add(id);
 			if (announcedNoown.has(id) || announced >= MAX_ANNOUNCE_PER_TICK) continue;
+			// ghost guard: announce only tasks this conversation could
+			// meaningfully claim — in progress, with units, still renderable
+			if (isDone(t) || (t.total ?? 0) <= 0 || !isVisible(t)) continue;
 			announcedNoown.add(id);
 			announced++;
 			const counts = (t.total ?? 0) > 0 ? ` ${t.done ?? 0}/${t.total}` : "";
