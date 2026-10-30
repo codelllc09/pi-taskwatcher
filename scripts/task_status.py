@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""task_status.py — generic task-progress writer (companion to the task-status Pi extension)
+"""task_status.py — generic task-progress writer (companion to the pi-taskwatcher Pi extension)
 
 Design: any background job (transcription, downloads, batch conversion, …)
 calls this script periodically and the Pi TUI footer shows live progress

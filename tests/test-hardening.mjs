@@ -5,7 +5,7 @@
  * extension through a mock, and asserts on observable behavior.
  */
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 
 let pass = 0, fail = 0;
 const ok = (cond, name) => { cond ? (pass++, console.log(`  ✓ ${name}`)) : (fail++, console.error(`  ✗ ${name}`)); };
@@ -125,6 +125,24 @@ console.log("python CLI: failures exit non-zero with a message");
 	ok(r1.status === 0, "set ok");
 	const r2 = spawnSync("python3", [new URL("../scripts/task_status.py", import.meta.url).pathname, "bump", "--id", "ghost"], { env: { ...process.env, PI_TASK_STATUS_DIR: DIR }, encoding: "utf-8" });
 	ok(r2.status !== 0 && (r2.stderr || r2.stdout).length > 0, "bump of unknown id fails loudly");
+}
+
+console.log("unreadable status dir: surfaced once, not silent; healthy dir: quiet");
+scratch();
+chmodSync(DIR, 0o000);
+{
+	const { out } = await runChild(HARNESS + `
+await new Promise(r => setTimeout(r, 2500));
+`);
+	const dirErr = out.split("\n").filter((l) => l.includes("cannot read"));
+	ok(dirErr.length === 1 && dirErr[0].startsWith("NOTE:error:"), "dir-level read failure announced exactly once with cause");
+}
+chmodSync(DIR, 0o755);
+{
+	const { out } = await runChild(HARNESS + `
+await new Promise(r => setTimeout(r, 1500));
+`);
+	ok(!out.split("\n").some((l) => l.includes("cannot read")), "healthy dir: no dir-error noise");
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

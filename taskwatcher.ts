@@ -216,12 +216,16 @@ function bumpBad(bad: Map<string, BadFile>, file: string, why: string): void {
  * return an empty result (missing dir legitimately means "no tasks");
  * per-file problems are accumulated into `bad` with consecutive counts.
  */
-async function readStatusDir(bad: Map<string, BadFile>): Promise<{ tasks: Task[]; truncated: number }> {
+async function readStatusDir(bad: Map<string, BadFile>): Promise<{ tasks: Task[]; truncated: number; dirError?: string }> {
 	const tasks: Task[] = [];
 	let names: string[];
 	try {
 		names = await fsp.readdir(STATUS_DIR);
-	} catch {
+	} catch (e) {
+		// ENOENT is legitimate ("no tasks yet"); anything else (EACCES,
+		// ENOTDIR, EMFILE…) must surface — never fail silently (§8)
+		const code = (e as NodeJS.ErrnoException)?.code ?? "";
+		if (code !== "ENOENT") return { tasks, truncated: 0, dirError: `${code || "ERR"}: ${String(e).slice(0, 80)}` };
 		bad.clear();
 		return { tasks, truncated: 0 };
 	}
@@ -311,6 +315,7 @@ export default function (pi: ExtensionAPI) {
 	const announcedBad = new Set<string>();
 	const announcedNoown = new Set<string>(); // un-attributed tasks already announced (§7)
 	const announcedTrunc = new Set<string>(); // single-element use: dir truncation
+	let announcedDirErr = false; // dir-level read failure: announce once per episode
 	const nudgedFor = new Map<string, number>(); // id → task.updated at nudge time
 	const wakeFailAnnounced = new Set<string>();
 	const cliPath = resolveCli();
@@ -485,8 +490,16 @@ export default function (pi: ExtensionAPI) {
 		inFlight = true;
 		;(globalThis as any).__taskStatusTestHook?.("refresh"); // test seam: cadence/failure observation
 		try {
-			const { tasks, truncated } = await readStatusDir(badFiles);
+			const { tasks, truncated, dirError } = await readStatusDir(badFiles);
 			consecFails = 0;
+			if (dirError) {
+				if (!announcedDirErr) {
+					announcedDirErr = true;
+					safeNotify(ctx, `[task-status] cannot read ${STATUS_DIR} (${dirError}) — progress chips inactive; see /task-status`, "error");
+				}
+			} else if (announcedDirErr) {
+					announcedDirErr = false; // recovered → re-arm for the next episode
+			}
 			announceUnattributed(ctx, tasks);
 			const visibleTasks = tasks.filter(isVisible).filter(ownTask); // §7: own only (strict)
 			announceProblems(ctx, truncated);
@@ -612,7 +625,7 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			await refresh(ctx);
-			const { tasks, truncated } = await readStatusDir(badFiles);
+			const { tasks, truncated, dirError } = await readStatusDir(badFiles);
 			const rows: string[] = [];
 			if (tasks.length === 0 && badFiles.size === 0) {
 				rows.push(`No task statuses (dir: ${STATUS_DIR})`);
@@ -634,6 +647,7 @@ export default function (pi: ExtensionAPI) {
 				rows.push("Problem files:");
 				for (const [file, e] of badFiles) rows.push(`  ✗ ${file} — ${e.why} (×${e.count})`);
 			}
+			if (dirError) rows.push(`  ✗ status dir unreadable: ${dirError}`);
 			if (truncated > 0) rows.push(`  ⚠ ${truncated} file(s) beyond PI_TASK_MAX_FILES=${MAX_FILES} unread`);
 			if (envIssues.length > 0) rows.push(`  ⚠ env ignored: ${envIssues.join("; ")}`);
 			ctx.ui.notify(rows.join("\n"), "info");

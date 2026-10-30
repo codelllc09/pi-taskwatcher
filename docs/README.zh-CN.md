@@ -93,7 +93,7 @@ pi install npm:pi-taskwatcher
 ## 测试
 
 ```bash
-npm test   # 100 项断言：工具往返、看门狗生命周期、防冻结、
+npm test   # 102 项断言：工具往返、看门狗生命周期、防冻结、
            # 环境消毒、僵尸进程防护、失败暴露
 ```
 

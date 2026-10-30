@@ -103,7 +103,7 @@ pi install npm:pi-taskwatcher
 ## Tests
 
 ```bash
-npm test   # 100 assertions: tool roundtrip, watchdog lifecycle, anti-freeze,
+npm test   # 102 assertions: tool roundtrip, watchdog lifecycle, anti-freeze,
            # env sanitization, zombie-proof exit, failure surfacing
 ```
 
