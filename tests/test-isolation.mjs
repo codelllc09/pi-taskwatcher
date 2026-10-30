@@ -23,7 +23,7 @@ process.env.PI_TASK_STATUS_DIR = DIR;
 process.env.PI_TASK_REFRESH_MS = "500";
 process.env.PI_TASK_SHOW_OWNERLESS = "0";
 
-const mod = await import("../task-status.ts");
+const mod = await import("../taskwatcher.ts");
 
 function makeSession(sid) {
 	const s = { sid, nudges: [], lines: [], notes: [], handlers: {}, tool: undefined, cmd: undefined };

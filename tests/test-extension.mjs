@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * test-extension.cjs — functional tests for task-status.ts
+ * test-extension.cjs — functional tests for taskwatcher.ts
  * Tool roundtrip, error paths, watchdog lifecycle.
  * Run: node tests/test-extension.cjs   (expects PI_TASK_STATUS_DIR to a scratch dir)
  */
@@ -12,7 +12,7 @@ mkdirSync(DIR, { recursive: true });
 process.env.PI_TASK_STATUS_DIR = DIR;
 process.env.PI_TASK_REFRESH_MS = "500";
 
-const mod = await import("../task-status.ts");
+const mod = await import("../taskwatcher.ts");
 const toolCalls = { sendUserMessage: [] };
 let registeredTool;
 const handlers = {};

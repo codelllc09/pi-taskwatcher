@@ -1,6 +1,6 @@
 {
-  "name": "pi-task-status",
-  "version": "0.2.1",
+  "name": "pi-taskwatcher",
+  "version": "0.3.0",
   "description": "Show any external process's progress as live chips in the Pi footer via a language-agnostic JSON file convention",
   "license": "MIT",
   "keywords": [
@@ -13,15 +13,15 @@
   ],
   "pi": {
     "extensions": [
-      "./task-status.ts"
+      "./taskwatcher.ts"
     ]
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/codelllc09/pi-task-status.git"
+    "url": "git+https://github.com/codelllc09/pi-taskwatcher.git"
   },
-  "homepage": "https://github.com/codelllc09/pi-task-status#readme",
-  "bugs": "https://github.com/codelllc09/pi-task-status/issues",
+  "homepage": "https://github.com/codelllc09/pi-taskwatcher#readme",
+  "bugs": "https://github.com/codelllc09/pi-taskwatcher/issues",
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
   },
@@ -32,7 +32,7 @@
     "test": "node tests/test-extension.mjs && node tests/test-hardening.mjs && node tests/test-e2e.mjs && node tests/test-isolation.mjs"
   },
   "files": [
-    "task-status.ts",
+    "taskwatcher.ts",
     "scripts/",
     "!scripts/__pycache__",
     "docs/",

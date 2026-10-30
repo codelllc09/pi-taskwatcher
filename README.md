@@ -1,9 +1,10 @@
 **English** · [简体中文](./docs/README.zh-CN.md)
 
-# pi-task-status
+# pi-taskwatcher
 
-Live progress chips in the Pi footer for **any background process** — it
-just writes a JSON file. Any language, any machine, no Pi-side wiring.
+Live progress chips in the Pi footer for **any background process** —
+plus a watchdog that nudges the agent when a task stalls. Any language,
+any machine, no Pi-side wiring: the job just writes a JSON file.
 
 ```
 ✓ Convert 153/153 100%   ◆ Transcribe 16/153 10% · 3.4h left
@@ -50,26 +51,16 @@ reach for it before launching any long batch job — no user reminder needed.
 ## Conversation isolation
 
 `STATUS_DIR` is machine-global, but tasks belong to the conversation that
-created them: tool writes stamp `owner=<sessionId>` (creation paths only —
-an existing un-stamped file is never adopted implicitly), and the footer
-and watchdog consider **only this conversation's tasks**. Un-stamped
-files (legacy writers, manual echoes) may belong to another conversation,
-so they are not shown or watched here — but they are never silent: each
-*live* one (still running, inside the render window) is announced once
-with the claim recipe, and `/task-status` lists everything (`[other]`,
-`[ownerless]`). Finished or aged-out ownerless files are ghosts: claiming
-them would be pointless, and re-warning every new session forever would be
-noise — so they are not announced, just listed as `[ownerless]` (delete
-with `task_progress {"action":"remove"}` or `task_status.py rm <id>`).
-Adopt with
-`/task-status claim <id>` or the tool action `task_progress {action:"claim",
-id}` — the owning conversation's agent can reclaim pre-upgrade tasks in one
-call (bump/done results note un-attributed tasks with the claim recipe);
-give back with `release <id>`.
-`PI_TASK_SHOW_OWNERLESS=1` restores legacy display + exactly-one-session
-claim-and-nudge; `PI_TASK_ISOLATION=0` disables isolation entirely.
-Scripts keep ownership via `--owner` (CLI) or the `owner` JSON field
-(recipe in the set result).
+created them: tool writes stamp `owner=<sessionId>` (creation only —
+never adopted implicitly), and the footer and watchdog consider **only
+this conversation's tasks**. Un-stamped files (legacy writers) are not
+shown or watched here, but never silent: each *live* one is announced
+once with the claim recipe (`/task-status claim <id>` or
+`task_progress {action:"claim"}`); finished or aged-out ones — ghosts —
+are not announced, just listed `[ownerless]` in `/task-status` (delete:
+`task_progress {action:"remove"}`). `PI_TASK_SHOW_OWNERLESS=1` restores
+legacy display; `PI_TASK_ISOLATION=0` disables isolation. Scripts keep
+ownership via `--owner` (CLI) or the `owner` JSON field.
 
 ## Watchdog
 
@@ -106,13 +97,13 @@ and the ignored value is reported at session start.
 ## Install
 
 ```bash
-pi install npm:pi-task-status
+pi install npm:pi-taskwatcher
 ```
 
 ## Tests
 
 ```bash
-npm test   # 93 assertions: tool roundtrip, watchdog lifecycle, anti-freeze,
+npm test   # 100 assertions: tool roundtrip, watchdog lifecycle, anti-freeze,
            # env sanitization, zombie-proof exit, failure surfacing
 ```
 

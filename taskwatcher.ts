@@ -1,5 +1,5 @@
 /**
- * task-status.ts — generic background-task progress chips for Pi's footer
+ * taskwatcher.ts — generic background-task progress chips for Pi's footer
  *
  * ─────────────────────────────────────────────────────────────
  * 1. Data convention (any process can report; no pi-side wiring)
@@ -285,7 +285,8 @@ function toolError(msg: string) {
 function resolveCli(): string {
 	const cands = [
 		path.join(os.homedir(), ".pi", "agent", "scripts", "task_status.py"),
-		path.join(os.homedir(), ".pi", "agent", "npm", "node_modules", "pi-task-status", "scripts", "task_status.py"),
+		path.join(os.homedir(), ".pi", "agent", "npm", "node_modules", "pi-taskwatcher", "scripts", "task_status.py"),
+		path.join(os.homedir(), ".pi", "agent", "npm", "node_modules", "pi-task-status", "scripts", "task_status.py"), // pre-rename installs
 	];
 	for (const c of cands) {
 		try {

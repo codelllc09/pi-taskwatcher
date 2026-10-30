@@ -1,9 +1,10 @@
 [English](../README.md) · **简体中文**
 
-# pi-task-status
+# pi-taskwatcher
 
-在 pi 底栏实时显示**任意外部进程**的进度——进程只需写一个 JSON 文件。
-任何语言、任何机器、无需 pi 侧任何配置。
+在 pi 底栏实时显示**任意外部进程**的进度，任务卡住时看门狗还会主动
+提醒 agent。进程只需写一个 JSON 文件；任何语言、任何机器、无需 pi
+侧任何配置。
 
 ```
 ✓ Convert 153/153 100%   ◆ Transcribe 16/153 10% · 3.4h left
@@ -48,21 +49,15 @@ task_status.py done --id asr      # 还有：rm / ls
 
 ## 对话隔离
 
-状态目录是机器级全局的，但任务归属于创建它的对话：工具写入打上
-`owner=<sessionId>`（只在创建路径盖章——已存在的未标记文件绝不被隐式
-收养），footer 与看门狗**只看本对话的任务**。未标记文件（旧代码写的、
-手工 echo 的）可能属于其他对话，因此这里不显示、不唤醒——但绝不静默：
-每个**活着的**未标记任务（进行中、仍在渲染窗口内）首次出现时公告一次
-并附认领方法；已完成或早已过期的未标记文件是“幽灵”——认领毫无意义，
-每个新会话重复警告更是噪音，因此不公告，只列为 `[ownerless]`
-（可用 `task_progress {"action":"remove"}` 或 `task_status.py rm <id>`
-清理）。`/task-status` 列出全部（`[other]` / `[ownerless]`）。用 `/task-status claim <id>` 或工具动作
-`task_progress {action:"claim", id}` 显式收养——创建方会话的 agent 可一步
-认回升级前创建的任务（bump/done 的返回会提示未标记任务及认领方法）；
-`release <id>` 归还。`PI_TASK_SHOW_OWNERLESS=1` 恢复旧行为（显示 +
-恰好一个会话认领后唤醒）；`PI_TASK_ISOLATION=0` 彻底关闭隔离。
-脚本侧用 `--owner`（CLI）或 JSON 的 `owner` 字段保持归属（set 返回里
-有配方）。
+状态目录机器级全局，但任务归属创建它的对话：工具写入打上
+`owner=<sessionId>`（只在创建路径盖章——绝不隐式收养），footer 与
+看门狗**只看本对话的任务**。未标记文件（旧代码写的）这里不显示、
+不唤醒，但绝不静默：**活着的**首次出现公告一次并附认领方法
+（`/task-status claim <id>` 或 `task_progress {action:"claim"}`）；
+已结束或早已过期的“幽灵”不公告，只在 `/task-status` 列为
+`[ownerless]`（清理：`task_progress {action:"remove"}`）。
+`PI_TASK_SHOW_OWNERLESS=1` 恢复旧行为；`PI_TASK_ISOLATION=0` 彻底关闭
+隔离。脚本侧用 `--owner`（CLI）或 JSON 的 `owner` 字段保持归属。
 
 ## 看门狗
 
@@ -92,13 +87,13 @@ task_status.py done --id asr      # 还有：rm / ls
 ## 安装
 
 ```bash
-pi install npm:pi-task-status
+pi install npm:pi-taskwatcher
 ```
 
 ## 测试
 
 ```bash
-npm test   # 88 项断言：工具往返、看门狗生命周期、防冻结、
+npm test   # 100 项断言：工具往返、看门狗生命周期、防冻结、
            # 环境消毒、僵尸进程防护、失败暴露
 ```
 

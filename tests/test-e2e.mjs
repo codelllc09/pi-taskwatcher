@@ -19,7 +19,7 @@ mkdirSync(DIR, { recursive: true });
 process.env.PI_TASK_STATUS_DIR = DIR;
 process.env.PI_TASK_REFRESH_MS = "500";
 
-const mod = await import("../task-status.ts");
+const mod = await import("../taskwatcher.ts");
 const sent = [];
 const notes = [];
 const statusLines = [];

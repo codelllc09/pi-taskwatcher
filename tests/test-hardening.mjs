@@ -44,7 +44,7 @@ mod.default(pi);
 await globalThis.h.session_start({}, {
   ui: { notify: (m, k) => console.log("NOTE:" + k + ":" + m), setStatus: () => {}, theme: { fg: (_s, x) => x } },
 });
-`.replace("MODULE_PATH", new URL("../task-status.ts", import.meta.url).pathname);
+`.replace("MODULE_PATH", new URL("../taskwatcher.ts", import.meta.url).pathname);
 
 console.log("env sanitization: garbage values fall back, get reported, cannot spin");
 for (const badVal of ["", "abc", "0", "-5"]) {

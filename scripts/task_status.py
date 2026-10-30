@@ -199,7 +199,7 @@ def cmd_ls(a) -> int:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Generic task-progress writer (pairs with task-status.ts)")
+    ap = argparse.ArgumentParser(description="Generic task-progress writer (pairs with taskwatcher.ts)")
     ap.add_argument("--status-dir", help="override the status dir (default ~/.pi/agent/status)")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
