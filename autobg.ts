@@ -302,7 +302,8 @@ function createDemotableOps(pi: ExtensionAPI): BashOperations {
 
 					// small explicit timeout demotes earlier; timeout NEVER kills here
 					const demoteMs = timeout !== undefined ? Math.min(timeout * 1000, DEMOTE_MS) : DEMOTE_MS;
-	let demoted = false;
+	const t0 = Date.now(); // command start — durations report the FULL run
+					let demoted = false;
 					let logStream: WriteStream | undefined;
 					const id = `bg-${(sessionId ?? "x").slice(0, 4)}${Date.now().toString(36).slice(-4)}-${++counter}`;
 
@@ -358,7 +359,7 @@ function createDemotableOps(pi: ExtensionAPI): BashOperations {
 							id,
 							command,
 							pid: child.pid,
-							startedAt: Date.now(),
+							startedAt: t0,
 							logPath: path.join(BG_DIR, `${id}.log`),
 						};
 						tasks.set(id, task);
