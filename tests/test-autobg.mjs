@@ -53,7 +53,7 @@ const run = (args, signal) => bashTool.execute("tc", args, signal, undefined);
 {
 	const r = await run({ command: "echo hello-sync" });
 	ok(r.content[0].text.includes("hello-sync"), "short command output passes through");
-	ok(!sent.some(([m]) => m.includes("后台命令结束")), "no wake for short commands");
+	ok(!sent.some(([m]) => m.includes("Background command finished")), "no wake for short commands");
 }
 
 // ── 2. long command: demote at 10 s, wake on finish ──────────────────────
@@ -66,7 +66,7 @@ const run = (args, signal) => bashTool.execute("tc", args, signal, undefined);
 	ok(r.content[0].text.includes("pre"), "pre-detach output retained");
 	ok(!r.content[0].text.includes("post"), "post-detach output NOT in result");
 	await sleep(4500); // command ends at t=13s; +500ms grace + margin
-	const wake = sent.find(([m]) => m.includes("后台命令结束"));
+	const wake = sent.find(([m]) => m.includes("Background command finished"));
 	ok(wake, "completion wake sent");
 	ok(wake[0].includes("exit 0"), "wake carries exit code");
 	ok(wake[0].includes("post"), "wake carries output tail");
@@ -95,11 +95,11 @@ sent.length = 0;
 notes.length = 0;
 await handlers.tool_execution_start({ toolCallId: "w1", toolName: "hung_tool", args: {} }, uiCtx);
 await sleep(31500);
-ok(notes.some(([m, k]) => k === "warning" && m.includes("hung_tool") && m.includes("无进展")), "A: stall notice to user at 30 s");
-ok(sent.some(([m]) => m.includes("hung_tool") && m.includes("静默")), "A: stall notice queued for the model");
+ok(notes.some(([m, k]) => k === "warning" && m.includes("hung_tool") && m.includes("no progress")), "A: stall notice to user at 30 s");
+ok(sent.some(([m]) => m.includes("hung_tool") && m.includes("went silent")), "A: stall notice queued for the model");
 await sleep(31000);
 ok(aborts === 1, "A: auto-abort fired at 60 s silence");
-ok(sent.some(([m]) => m.includes("判定挂死") && m.includes("中止本次运行")), "A: abort explanation queued for the model");
+ok(sent.some(([m]) => m.includes("judged hung") && m.includes("auto-aborted")), "A: abort explanation queued for the model");
 await handlers.tool_execution_end({ toolCallId: "w1" }, uiCtx);
 
 // ── window B: cap reached (2nd hang, MAX=1 → notify only) ∥ never-abort ──
@@ -110,7 +110,7 @@ await handlers.tool_execution_start({ toolCallId: "w2", toolName: "hung_tool", a
 await handlers.tool_execution_start({ toolCallId: "w4", toolName: "never_tool", args: {} }, uiCtx);
 await sleep(62000);
 ok(aborts === abortsBeforeB, "B: capped tool is not aborted again");
-ok(sent.join("\n").includes("上限") || notes.join("\n").includes("上限"), "B: cap explanation present");
+ok(sent.join("\n").includes("no further auto-aborts") || notes.join("\n").includes("no further auto-aborts"), "B: cap explanation present");
 ok(aborts === abortsBeforeB, "B: never-abort tool untouched (same window)");
 ok(notes.some(([m]) => m.includes("never_tool")), "B: never-abort tool still gets informational notice");
 await handlers.tool_execution_end({ toolCallId: "w2" }, uiCtx);
@@ -136,7 +136,7 @@ await handlers.tool_execution_end({ toolCallId: "r1" }, uiCtx);
 	const r = await run({ command: `sleep 12; echo late` });
 	ok(r.content[0].text.includes("[autobg]"), "demote still works after shutdown flag");
 	await sleep(2500);
-	ok(!sent.some(([m]) => m.includes("后台命令结束")), "no wake after session shutdown");
+	ok(!sent.some(([m]) => m.includes("Background command finished")), "no wake after session shutdown");
 }
 
 // ── zombie guard: detached children and unref()ed timers never pin loop ─

@@ -235,7 +235,7 @@ async function readTail(logPath: string): Promise<string> {
 			await fh.close();
 		}
 	} catch {
-		return "(日志不可读)";
+		return "(log unreadable)";
 	}
 }
 
@@ -340,9 +340,9 @@ function createDemotableOps(pi: ExtensionAPI): BashOperations {
 						wake(
 							pi,
 							id,
-							`${mark} [${id}] 后台命令结束:exit ${exitCode},用时 ${dur}\n` +
-								`命令:${head}\n日志尾部:\n${tail || "(无输出)"}\n` +
-								`(完整日志 ${logPath};若该命令服务于此前的任务,请基于结果继续收尾)`,
+							`${mark} [${id}] Background command finished: exit ${exitCode}, total ${dur}\n` +
+							`command: ${head}\noutput tail:\n${tail || "(no output)"}\n` +
+							`(full log ${logPath}; if it served an earlier task, wrap that up with this result)`,
 						);
 					};
 					child.once("exit", () => {
@@ -378,7 +378,7 @@ function createDemotableOps(pi: ExtensionAPI): BashOperations {
 							label,
 							done: 0,
 							total: 1,
-							note: "运行中",
+							note: "running",
 							updated: nowSec(),
 							...(owner ? { owner } : {}),
 						});
@@ -386,7 +386,7 @@ function createDemotableOps(pi: ExtensionAPI): BashOperations {
 							const t = tasks.get(id);
 							if (!t) return;
 							void writeStatus(id, {
-								note: `运行 ${fmtDur(Date.now() - t.startedAt)}`,
+								note: `running ${fmtDur(Date.now() - t.startedAt)}`,
 								updated: nowSec(),
 							});
 						}, TOUCH_S * 1000);
@@ -394,11 +394,12 @@ function createDemotableOps(pi: ExtensionAPI): BashOperations {
 
 						onData(
 							Buffer.from(
-								`\n[autobg] 命令已运行 ${fmtDur(demoteMs)} 仍未结束,自动转后台继续执行(pid ${child.pid},未被杀死):\n` +
-									`- 任务 id:${id}(footer chip 可见;/task-status 查看)\n` +
-									`- 完整日志:${task.logPath}\n` +
-									`- 结束时会自动通知(exit code + 日志尾部),届时再根据结果继续\n` +
-									`- 现在可以继续做其他工作;需要中途查看可 tail 日志;不要重复启动同一命令\n`,
+						`
+[autobg] Command still running after ${fmtDur(demoteMs)} — detached to background (pid ${child.pid}, NOT killed):\n` +
+							`- task id: ${id} (footer chip; /autobg, /task-status)\n` +
+							`- full log: ${task.logPath}\n` +
+							`- you will be notified on exit (exit code + output tail); pick up from there\n` +
+							`- proceed with other work meanwhile; tail the log to check on it; do NOT re-run this command\n`,
 							),
 						);
 						signal?.removeEventListener("abort", onAbort);
@@ -437,18 +438,18 @@ function tick(pi: ExtensionAPI) {
 		if (silent >= STALL_S * 1000 && !w.stalledNotified) {
 			w.stalledNotified = true;
 			safeNotify(
-				`⏱ 工具 ${w.toolName} 已运行 ${fmtDur(now - w.startedAt)}(其中 ${fmtDur(silent)} 无进展)。` +
+				`⏱ Tool ${w.toolName} has run ${fmtDur(now - w.startedAt)} (${fmtDur(silent)} with no progress).` +
 					(ABORT_S > 0 && !NEVER_ABORT.has(w.toolName)
-						? `若持续静默至 ${fmtDur(ABORT_S * 1000)} 将自动中止本次运行并唤醒模型调整。`
-						: `该工具不会自动中止;确认挂死可 Esc。`),
+						? `If it stays silent for ${fmtDur(ABORT_S * 1000)}, the run will be auto-aborted and the agent woken to adjust.`
+						: `This tool is never auto-aborted; press Esc if you are sure it hung.`),
 				"warning",
 			);
 			wake(
 				pi,
 				w.toolCallId,
-				`[autobg] 提示:工具 ${w.toolName} 在本次调用中已静默 ${fmtDur(silent)} 无进展。` +
-					`若它最终正常完成,此条仅作回顾——此类调用建议改为分步执行或可后台化的方式;` +
-					`若被中止,请结合中止说明调整方案。`,
+				`[autobg] Note: tool ${w.toolName} went silent for ${fmtDur(silent)} during this call. ` +
+					`If it eventually completed, treat this as a retrospective — prefer stepwise or backgroundable calls for this kind of work; ` +
+					`if it was aborted, adjust per the abort notice.`,
 			);
 		}
 		if (ABORT_S > 0 && !NEVER_ABORT.has(w.toolName) && silent >= ABORT_S * 1000 && !w.aborted) {
@@ -456,13 +457,13 @@ function tick(pi: ExtensionAPI) {
 			const n = abortCount.get(w.toolName) ?? 0;
 			if (n < MAX_AUTO_ABORTS) {
 				abortCount.set(w.toolName, n + 1);
-				const cap = n + 1 >= MAX_AUTO_ABORTS ? `本会话该工具自动中止已达上限(${n + 1} 次),之后不再自动中止。` : "";
+				const cap = n + 1 >= MAX_AUTO_ABORTS ? `Auto-abort cap for this tool reached (${n + 1}); no further auto-aborts this session.` : "";
 				wake(
 					pi,
 					w.toolCallId,
-					`[autobg] 工具 ${w.toolName} 静默 ${fmtDur(silent)},判定挂死,已自动中止本次运行` +
-						`(已完成的工具结果与会话历史均保留)。请换一种方式推进:检查该工具是否适用/参数是否触发交互等待/依赖服务是否在线;` +
-						`必要时明确告知用户当前状况。${cap}`,
+					`[autobg] Tool ${w.toolName} has been silent for ${fmtDur(silent)} — judged hung; the run was auto-aborted ` +
+						`(completed tool results and session history are preserved). Proceed differently: check whether the tool applies / its args trigger an interactive wait / its backing service is up; ` +
+						`tell the user the situation when needed. ${cap}`,
 				);
 				try {
 					uiCtx?.abort?.();
@@ -471,12 +472,12 @@ function tick(pi: ExtensionAPI) {
 				}
 			} else {
 				// cap reached: no more auto-aborts, but never silently — say so once
-				safeNotify(`⏱ 工具 ${w.toolName} 再次静默 ${fmtDur(silent)},自动中止已达上限(${n} 次),不再自动中止;确认挂死可 Esc。`, "warning");
+				safeNotify(`⏱ Tool ${w.toolName} silent again for ${fmtDur(silent)}; auto-abort cap reached (${n}), no further auto-aborts — press Esc if you are sure it hung.`, "warning");
 				wake(
 					pi,
 					w.toolCallId,
-					`[autobg] 工具 ${w.toolName} 再次静默 ${fmtDur(silent)}。本会话该工具的自动中止已达上限(${n} 次),本次不再自动中止。` +
-						`请自行决断:换一种方式推进、排查该工具的依赖,或明确请用户 Esc。`,
+					`[autobg] Tool ${w.toolName} is silent again for ${fmtDur(silent)}. Its auto-abort cap (${n}) is reached; this call will not be aborted. ` +
+						`Decide yourself: take a different approach, check the tool's dependencies, or ask the user to press Esc.`,
 				);
 			}
 		}
@@ -550,8 +551,8 @@ export default function (pi: ExtensionAPI) {
 			for (const n of missing) mcpAdvised.add(n);
 			try {
 				ctx?.ui?.notify?.(
-					`[autobg] 以下 MCP server 未配置 timeout,挂死时工具调用会无限等待:${missing.join(", ")}。` +
-						`在 mcp.json 为它们加 "timeout"(秒)后,超时会返回错误结果,模型可自行继续。`,
+					`[autobg] MCP servers without a timeout — a hung tool call would wait forever: ${missing.join(", ")}. ` +
+						`Add "timeout" (seconds) in mcp.json; a timed-out call returns an error result and the model continues on its own.`,
 					"warning",
 				);
 			} catch {
@@ -595,15 +596,15 @@ export default function (pi: ExtensionAPI) {
 		description: "List backgrounded bash tasks (autobg)",
 		handler: async (_args, ctx) => {
 			if (tasks.size === 0) {
-				ctx.ui.notify("没有运行中的后台命令", "info");
+				ctx.ui.notify("No backgrounded commands running.", "info");
 				return;
 			}
 			const now = Date.now();
 			const lines = [...tasks.values()].map(
 				(t) =>
 					`${t.id} · pid ${t.pid} · ${fmtDur(now - t.startedAt)}\n` +
-					`  ${t.command.trim().split("\n")[0]?.slice(0, 100)}\n` +
-					`  日志:${t.logPath}`,
+					`  log: ${t.logPath}`,
+					`  log: ${t.logPath}`,
 			);
 			ctx.ui.notify(lines.join("\n"), "info");
 		},
