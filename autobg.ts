@@ -418,9 +418,17 @@ function createDemotableOps(pi: ExtensionAPI): BashOperations {
 							if (BG_STUCK_S <= 0) return;
 							void (async () => {
 								try {
-									const st = await fsp.stat(t.logPath);
-									if (st.size !== t.logSize) {
-										t.logSize = st.size;
+									let size = 0;
+									try {
+										size = (await fsp.stat(t.logPath)).size;
+									} catch (e) {
+										if ((e as NodeJS.ErrnoException).code !== "ENOENT") return; // transient: skip tick
+										// log never created (creation failure was announced at
+										// demote): treat as size 0 — silence still counts, the
+										// watch must not die on the very tasks that lost output
+									}
+									if (size !== t.logSize) {
+										t.logSize = size;
 										t.lastLogGrowthAt = Date.now();
 										t.stuckNotified = false; // log alive → re-arm
 										return;
