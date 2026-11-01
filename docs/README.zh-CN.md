@@ -100,3 +100,23 @@ npm test   # 102 项断言：工具往返、看门狗生命周期、防冻结、
 ## 许可证
 
 MIT — 见 [LICENSE](../LICENSE)。
+
+
+## Autobg(v0.4.0)— 长跑工具调用不再卡死 agent
+
+**bash 自动降级。** 命令照常同步执行;超过 `PI_AUTOBG_DEMOTE_MS`(默认 120 秒)
+**进程不杀**,输出转写 `~/.pi/agent/bg/<id>.log`,工具立即返回说明,模型拿回
+控制权;结束时 `followUp` 消息唤醒模型(exit code + 用时 + 日志尾部),footer
+同步显示 `kind:"bg"` 状态 chip。同步期 Esc 照杀进程树;降级后任务独立。
+
+**通用静默观察(MCP 工具、其他扩展)。** 只有 bash 有执行层接缝,其他工具挂死
+只能"检测+解脱":静默 `PI_AUTOBG_STALL_S`(180 秒)→ 排队告知模型、提示用户;
+静默 `PI_AUTOBG_ABORT_S`(600 秒)→ 中止 run(被挂死工具阻塞的模型唯一的解脱
+通道)并附说明让模型换法重试。每工具自动中止上限(默认 2 次)防重试死循环;
+`PI_AUTOBG_NEVER_ABORT` 白名单豁免合法慢工具。未配 timeout 的 MCP server 开屏
+提醒——配了 timeout,挂死调用会自动返回错误结果,模型可自行继续。
+
+**看门狗修复(v0.4.0)。** 唤醒集与渲染集解耦:`PI_TASK_HIDE_MIN` 只淡出 chip,
+不再把任务移出唤醒候选(旧行为:挂得越久越没人提醒);`kind:"bg"` 任务跳过
+stale 唤醒。educator recipe 改教 `jq` 读-改-写——部分覆盖式直写会静默丢
+`owner`,任务随即从本会话的看门狗里消失(此前 nudge"时灵时不灵"的主因)。

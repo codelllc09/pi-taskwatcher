@@ -170,6 +170,10 @@ type Task = {
 	updated?: number;
 	/** Owning conversation id (conversation isolation, §7); absent = ownerless */
 	owner?: string;
+	/** Producer module; "bg" = autobg-managed bash task: it has its own
+	 *  completion wake, so the stale-nudge skips it (§6). Unknown kinds are
+	 *  treated like plain tasks — the convention is additive. */
+	kind?: string;
 	/** Optional unit ("lec", "posts", "MB"); only shown by /task-status listing */
 	unit?: string;
 };
@@ -382,15 +386,22 @@ export default function (pi: ExtensionAPI) {
 	};
 
 	// ── watchdog: one nudge per update-level, re-armed by progress, session-scoped ──
-	const wakeStale = async (ctx: any, visibleTasks: Task[]) => {
+	// Bugfix (v0.4.0): the nudge set is ALL own tasks, not the rendered set.
+	// isVisible() drops tasks silent > HIDE_AFTER_S (30 min), so a task hung
+	// longer than that silently left the nudge candidates — the longer it
+	// hung, the quieter it got. Rendering (footer) and waking are now
+	// decoupled: HIDE_AFTER_S only fades the chip, never the watchdog.
+	// kind:"bg" tasks are skipped: autobg sends its own completion wake.
+	const wakeStale = async (ctx: any, ownTasks: Task[]) => {
 		if (!WAKE_ENABLED || typeof pi.sendUserMessage !== "function") return;
 		let sent = 0;
 		const alive = new Set<string>();
-		for (const t of visibleTasks) {
+		for (const t of ownTasks) {
 			const id = t.id ?? "";
 			if (!id) continue;
 			alive.add(id);
 			if (isDone(t) || !t.updated) continue;
+			if (t.kind === "bg") continue; // autobg owns the wake for bg tasks
 			if (!ownTask(t)) continue; // foreign conversations handle their own
 			const idleS = nowSec() - t.updated;
 			if (idleS < WAKE_AFTER_S) continue;
@@ -501,10 +512,11 @@ export default function (pi: ExtensionAPI) {
 					announcedDirErr = false; // recovered → re-arm for the next episode
 			}
 			announceUnattributed(ctx, tasks);
-			const visibleTasks = tasks.filter(isVisible).filter(ownTask); // §7: own only (strict)
+			const ownTasks = tasks.filter(ownTask); // §7: own only (strict)
+			const visibleTasks = ownTasks.filter(isVisible); // hide only fades the chip
 			announceProblems(ctx, truncated);
 			renderTasks(ctx, visibleTasks);
-			await wakeStale(ctx, visibleTasks);
+			await wakeStale(ctx, ownTasks);
 		} catch (e) {
 			// readStatusDir is designed not to throw; this is a belt-and-braces net
 			consecFails++;
@@ -724,8 +736,11 @@ export default function (pi: ExtensionAPI) {
 						`A tool call cannot fire mid-script — wire live updates into the job itself:`,
 						`  per completed unit, inside the script, run ONE of:`,
 						`    python3 ${cliPath} bump ${id}${t.owner ? ` --owner ${t.owner}` : ""}`,
-						`    or write JSON directly (atomic tmp+rename; unix-seconds timestamp):`,
-						`      {"id":"${id}","label":"${label}","done":N,"total":${total}${ownerField},"note":"...","updated":$(date +%s)} → ${fp}`,
+						`    or update the JSON in place with jq (PRESERVES owner — plain > redirects drop it):`,
+								`  jq --argjson d N --argjson u $(date +%s) '.done=$d|.updated=$u' ${fp} > ${fp}.tmp && mv ${fp}.tmp ${fp}`,
+								`  (rewriting the full object by hand is only OK with EVERY field kept — owner included:`,
+								`   {"id":"${id}","label":"${label}","done":N,"total":${total}${ownerField},"updated":...}; a partial overwrite`,
+								`   silently strips owner and the task goes invisible to this conversation's watchdog)`,
 						`When finished: task_progress {"action":"done","id":"${id}"} (✓ green; auto-hides 30 min after last update; >${STALE_AFTER_S}s idle shows "· stale").`,
 						`Watchdog: if this task shows no update for ${Math.round(WAKE_AFTER_S / 60)} min, the extension wakes the agent (queued, never interrupts) to investigate — script-side bumps keep it quiet.`,
 					].join("\n");

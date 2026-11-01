@@ -77,10 +77,13 @@ writeFileSync(`${DIR}/hidden1.json`, JSON.stringify({ id: "hidden1", label: "H1"
 await call({ action: "remove", id: "edu" }); // trigger a refresh via tool
 ok(lastLine().includes("S1 1/9") && lastLine().includes("stale"), `stale marker shown: "${lastLine()}"`);
 ok(!lastLine().includes("H1"), "hidden task not rendered");
-// watchdog: only S1 (visible, stale, not done) qualifies — H1 is invisible, e2e is not yet stale
+// watchdog: S1 and H1 both qualify under v0.4.0 semantics — waking is
+// decoupled from rendering: HIDE_AFTER_S fades the chip but a hung task
+// stays a nudge candidate (the longer it hung, the louder it must get).
+// e2e is not yet stale. (v0.4.0: hidden-but-own stale tasks ARE nudged.)
 await sleep(700);
 ok(sent.some(([m]) => m.includes('"S1" 1/9')), "watchdog nudged the visible stale task");
-ok(!sent.some(([m]) => m.includes('"H1"')), "hidden tasks never nudged");
+ok(sent.some(([m]) => m.includes('"H1" 1/9')), "hidden stale task still nudged (wake ≠ render)");
 
 console.log("5. /task-status command: listing + problem files + clear");
 writeFileSync(`${DIR}/broken.json`, "{oops");

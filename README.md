@@ -64,18 +64,47 @@ ownership via `--owner` (CLI) or the `owner` JSON field.
 
 ## Watchdog
 
-A visible task that stops updating for `PI_TASK_WAKE_MIN` minutes (default
-5) is nudged exactly **once per update-level**: the extension injects a
-wake-up message into the session (`followUp`, queued behind a busy run,
-never interrupts) telling the agent what stalled and how to close it out.
+A task owned by this conversation that stops updating for `PI_TASK_WAKE_MIN`
+minutes (default 5) is nudged exactly **once per update-level**: the extension
+injects a wake-up message into the session (`followUp`, queued behind a busy
+run, never interrupts) telling the agent what stalled and how to close it out.
 Progress re-arms the nudge. Stuck jobs surface themselves.
+
+Since v0.4.0 the nudge set is **all own tasks**, not only the rendered ones:
+`PI_TASK_HIDE_MIN` fades the chip but never removes a task from the watchdog —
+a task hung for 35 min is nudged just like one hung for 6 min (previously the
+longer it hung, the quieter it got). Tasks stamped `kind:"bg"` are skipped:
+`autobg` delivers their completion wake itself.
+
+## Autobg (v0.4.0) — long-running tool calls never stall the agent
+
+**bash auto-detach.** Commands run synchronously exactly like the built-in
+tool. Past `PI_AUTOBG_DEMOTE_MS` (default 120 s) the process is **not killed**:
+output switches to `~/.pi/agent/bg/<id>.log`, the tool returns immediately
+with an explanation, and the model gets control back. On exit a `followUp`
+message wakes it with the exit code, duration and output tail. A `kind:"bg"`
+status file shows the footer chip. Esc still kills during the synchronous
+phase; a detached task is independent.
+
+**Generic stall watch (MCP tools, other extensions).** Only bash exposes an
+execution seam, so a hung non-bash tool is detected, not fixed: silent for
+`PI_AUTOBG_STALL_S` (180 s) → the model is told (queued) and the user
+informed; silent for `PI_AUTOBG_ABORT_S` (600 s) → the run is aborted — the
+only channel that frees a model blocked on a hung tool — with an explanation
+so it can retry differently. Per-tool cap `PI_AUTOBG_MAX_AUTO_ABORTS` (2)
+prevents retry loops; `PI_AUTOBG_NEVER_ABORT` exempts legitimately slow
+tools. MCP servers configured without a `timeout` are announced at startup:
+with a timeout, a hung call returns an error result and the model continues
+on its own.
 
 ## Env
 
 `PI_TASK_STATUS_DIR` · `PI_TASK_MAX` · `PI_TASK_REFRESH_MS` (floor 500 ms) ·
 `PI_TASK_HIDE_MIN` · `PI_TASK_STALE_SEC` · `PI_TASK_WAKE` ("0" disables the
 watchdog) · `PI_TASK_WAKE_MIN` · `PI_TASK_MAX_FILE_KB` · `PI_TASK_MAX_FILES` ·
-`PI_TASK_ISOLATION`
+`PI_TASK_ISOLATION` · autobg: `PI_AUTOBG_DEMOTE_MS` · `PI_AUTOBG_STALL_S` ·
+`PI_AUTOBG_ABORT_S` (0 disables) · `PI_AUTOBG_MAX_AUTO_ABORTS` ·
+`PI_AUTOBG_NEVER_ABORT` (comma list) · `PI_AUTOBG_DIR`
 
 All values are sanitized: garbage/zero/negative fall back to the default
 and the ignored value is reported at session start.
@@ -103,7 +132,7 @@ pi install npm:pi-taskwatcher
 ## Tests
 
 ```bash
-npm test   # 102 assertions: tool roundtrip, watchdog lifecycle, anti-freeze,
+npm test   # 140+ assertions: tool roundtrip, watchdog lifecycle, anti-freeze,
            # env sanitization, zombie-proof exit, failure surfacing
 ```
 
