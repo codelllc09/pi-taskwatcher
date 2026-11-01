@@ -252,6 +252,15 @@ async function readTail(logPath: string): Promise<string> {
 
 const childExited = (child: ChildProcess) => child.exitCode !== null || child.signalCode !== null;
 
+/** Human-readable exit semantics: 'exit 137 (killed)' says more than 'exit 137'. */
+function exitLabel(child: ChildProcess, code: number): string {
+	if (code === 0) return "exit 0 (success)";
+	const sig = child.signalCode;
+	if (sig) return `exit ${code} (killed by ${sig})`;
+	if (code === 130) return "exit 130 (interrupted)";
+	return `exit ${code} (failed)`;
+}
+
 /** Wait for exit; grace period after exit for stdio held by detached descendants. */
 function waitWithGrace(child: ChildProcess): Promise<number | null> {
 	return new Promise((resolve, reject) => {
@@ -354,7 +363,7 @@ function createDemotableOps(pi: ExtensionAPI): BashOperations {
 						wake(
 							pi,
 							id,
-							`${mark} [${id}] Background command finished: exit ${exitCode}, total ${dur}\n` +
+							`${mark} [${id}] Background command finished: ${exitLabel(child, exitCode)}, total ${dur}\n` +
 							`command: ${head}\noutput tail:\n${tail || "(no output)"}\n` +
 							`(full log ${logPath}; if it served an earlier task, wrap that up with this result)`,
 						);
