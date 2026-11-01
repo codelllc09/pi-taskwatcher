@@ -101,6 +101,10 @@ const MAX_AUTO_ABORTS = envNum("PI_AUTOBG_MAX_AUTO_ABORTS", 2, 1, 100);
 const TOUCH_S = envNum("PI_AUTOBG_TOUCH_S", 30, 10, 600);
 /** bg task: still running AND log silent for this long → one check-up wake (0 disables) */
 const BG_STUCK_S = envNum("PI_AUTOBG_BG_STUCK_S", 1800, 60, 86400);
+/** artifact retention: done bg status files / bg logs are swept hourly (cleanup "0" disables) */
+const KEEP_DONE_S = envNum("PI_AUTOBG_KEEP_DONE_MIN", 60, 1, 1440) * 60;
+const KEEP_LOG_S = envNum("PI_AUTOBG_KEEP_LOG_H", 24, 1, 720) * 3600;
+const CLEANUP_ENABLED = (process.env.PI_AUTOBG_CLEANUP ?? "1") !== "0";
 const TICK_MS = envNum("PI_AUTOBG_TICK_MS", 5_000, 1_000, 60_000);
 const TAIL_BYTES = 32_768;
 const EXIT_GRACE_MS = 100; // sync finish: stdio wind-down (mirrors built-in)
@@ -153,6 +157,7 @@ const abortCount = new Map<string, number>();
 const wakeFailAnnounced = new Set<string>();
 let uiCtx: any;
 let tickTimer: ReturnType<typeof setInterval> | undefined;
+let cleanupTimer: ReturnType<typeof setInterval> | undefined;
 
 const nowSec = () => Math.floor(Date.now() / 1000);
 
@@ -527,6 +532,63 @@ function tick(pi: ExtensionAPI) {
 }
 
 
+// ── artifact cleanup: bg status files outlive their chip, logs outlive their
+//    task; both are swept hourly once their retention elapses. Only kind:"bg"
+//    files with a filename prefix bg- are ever deleted — foreign files in the
+//    shared STATUS_DIR are untouchable. Failures count and announce (§4).
+let cleanupFails = 0;
+let cleanupFailAnnounced = false;
+export async function scanBgArtifacts(nowMs = Date.now()): Promise<{ status: number; logs: number }> {
+	let removedStatus = 0;
+	let removedLogs = 0;
+	try {
+		const ids = new Set<string>();
+		try {
+			for (const f of await fsp.readdir(STATUS_DIR)) {
+				if (!f.startsWith("bg-") || !f.endsWith(".json")) continue;
+				const file = path.join(STATUS_DIR, f);
+				try {
+					const t = JSON.parse(await fsp.readFile(file, "utf-8")) as Record<string, unknown>;
+					if (t.kind !== "bg") continue; // never touch foreign convention users
+					const done = (t.done ?? 0) >= (t.total ?? 0) && (t.total ?? 0) > 0;
+					const age = nowMs / 1000 - (typeof t.updated === "number" ? t.updated : 0);
+					if (!done || age <= KEEP_DONE_S) continue;
+					await fsp.rm(file, { force: true });
+					removedStatus++;
+				} catch {
+					/* unreadable/corrupt now: sweep later; never fatal */
+				}
+			}
+		} catch {
+			/* STATUS_DIR missing: nothing to sweep */
+		}
+		try {
+			for (const f of await fsp.readdir(BG_DIR)) {
+				if (!f.endsWith(".log")) continue;
+				const file = path.join(BG_DIR, f);
+				try {
+					const st = await fsp.stat(file);
+					if ((nowMs - st.mtimeMs) / 1000 <= KEEP_LOG_S) continue; // KEEP_*_S are seconds; mtime is ms
+					await fsp.rm(file, { force: true });
+					removedLogs++;
+				} catch {
+					/* vanished mid-scan */
+				}
+			}
+		} catch {
+			/* BG_DIR missing: nothing to sweep */
+		}
+		cleanupFails = 0;
+	} catch (e) {
+		cleanupFails++;
+		if (cleanupFails >= 3 && !cleanupFailAnnounced) {
+			cleanupFailAnnounced = true;
+			safeNotify(`[autobg] artifact sweep keeps failing (${String(e).slice(0, 120)}) — status/log files will accumulate`, "warning");
+		}
+	}
+	return { status: removedStatus, logs: removedLogs };
+}
+
 export default function (pi: ExtensionAPI) {
 	const cwd = process.cwd();
 	const bashTool = createBashTool(cwd, { operations: createDemotableOps(pi) });
@@ -614,6 +676,14 @@ export default function (pi: ExtensionAPI) {
 		}
 		shuttingDown = false;
 		statusFailAnnounced = false;
+		if (CLEANUP_ENABLED) {
+			if (cleanupTimer !== undefined) clearInterval(cleanupTimer); // re-entry (§3)
+			const sweep = () => void scanBgArtifacts();
+			const first = setTimeout(sweep, 30_000); // off the startup critical path
+			first.unref?.();
+			cleanupTimer = setInterval(sweep, 3_600_000);
+			cleanupTimer.unref?.();
+		}
 		adviseMcp(ctx);
 		if (envIssues.length > 0) {
 			safeNotify(`[autobg] ignored invalid env: ${envIssues.join("; ")}`, "error");
@@ -631,6 +701,10 @@ export default function (pi: ExtensionAPI) {
 		if (tickTimer !== undefined) {
 			clearInterval(tickTimer);
 			tickTimer = undefined;
+		}
+		if (cleanupTimer !== undefined) {
+			clearInterval(cleanupTimer);
+			cleanupTimer = undefined;
 		}
 	});
 

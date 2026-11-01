@@ -156,6 +156,28 @@ await handlers.tool_execution_end({ toolCallId: "r1" }, uiCtx);
 	ok(obit && obit[0].includes("exit 137"), "D: signal-killed bg task reports exit 137, not null");
 }
 
+// ── artifact cleanup sweep (pure function, retention by env defaults) ───
+{
+	const { scanBgArtifacts } = await import("../autobg.ts");
+	const { writeFileSync, utimesSync, existsSync } = await import("node:fs");
+	const now = Date.now();
+	const h = 3600_000;
+	writeFileSync(`${DIR}/bg-olddone.json`, JSON.stringify({ id: "bg-olddone", label: "x", done: 2, total: 2, updated: Math.floor((now - 2 * h) / 1000), kind: "bg" }));
+	writeFileSync(`${DIR}/bg-running.json`, JSON.stringify({ id: "bg-running", label: "x", done: 0, total: 1, updated: Math.floor(now / 1000), kind: "bg" }));
+	writeFileSync(`${DIR}/plain-task.json`, JSON.stringify({ id: "plain-task", done: 9, total: 9, updated: Math.floor((now - 48 * h) / 1000) })); // no bg- prefix: never touched
+	// logs live in PI_AUTOBG_DIR (= ${DIR}/bg)
+	writeFileSync(`${DIR}/bg/old.log`, "x");
+	utimesSync(`${DIR}/bg/old.log`, new Date(now - 25 * h), new Date(now - 25 * h));
+	writeFileSync(`${DIR}/bg/fresh.log`, "x");
+	const res = await scanBgArtifacts(now);
+	ok(res.status === 1, "cleanup: one done bg status removed");
+	ok(res.logs === 1, "cleanup: one aged log removed");
+	ok(!existsSync(`${DIR}/bg-olddone.json`), "cleanup: old done file gone");
+	ok(existsSync(`${DIR}/bg-running.json`), "cleanup: running task kept");
+	ok(existsSync(`${DIR}/plain-task.json`), "cleanup: non-bg file never touched");
+	ok(existsSync(`${DIR}/bg/fresh.log`), "cleanup: fresh log kept");
+}
+
 // ── session shutdown: no more wakes ─────────────────────────────────────
 {
 	sent.length = 0;
