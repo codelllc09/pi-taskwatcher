@@ -99,6 +99,8 @@ const STALL_S = envNum("PI_AUTOBG_STALL_S", 180, 30, 86_400);
 const ABORT_S = envNum("PI_AUTOBG_ABORT_S", 600, 60, 86_400); // 0 → disabled below
 const MAX_AUTO_ABORTS = envNum("PI_AUTOBG_MAX_AUTO_ABORTS", 2, 1, 100);
 const TOUCH_S = envNum("PI_AUTOBG_TOUCH_S", 30, 10, 600);
+/** bg task: still running AND log silent for this long → one check-up wake (0 disables) */
+const BG_STUCK_S = envNum("PI_AUTOBG_BG_STUCK_S", 1800, 60, 86400);
 const TICK_MS = envNum("PI_AUTOBG_TICK_MS", 5_000, 1_000, 60_000);
 const TAIL_BYTES = 32_768;
 const EXIT_GRACE_MS = 100; // sync finish: stdio wind-down (mirrors built-in)
@@ -126,6 +128,10 @@ interface BgTask {
 	startedAt: number;
 	logPath: string;
 	touch?: ReturnType<typeof setInterval>;
+	/** stuck-watch state: last log-growth time and one-notice-per-silence flag */
+	lastLogGrowthAt: number;
+	logSize: number;
+	stuckNotified: boolean;
 }
 interface Watch {
 	toolName: string;
@@ -361,6 +367,9 @@ function createDemotableOps(pi: ExtensionAPI): BashOperations {
 							pid: child.pid,
 							startedAt: t0,
 							logPath: path.join(BG_DIR, `${id}.log`),
+							lastLogGrowthAt: Date.now(),
+							logSize: 0,
+							stuckNotified: false,
 						};
 						tasks.set(id, task);
 						void fsp.mkdir(BG_DIR, { recursive: true }).catch(() => {
@@ -389,6 +398,35 @@ function createDemotableOps(pi: ExtensionAPI): BashOperations {
 								note: `running ${fmtDur(Date.now() - t.startedAt)}`,
 								updated: nowSec(),
 							});
+							if (BG_STUCK_S <= 0) return;
+							void (async () => {
+								try {
+									const st = await fsp.stat(t.logPath);
+									if (st.size !== t.logSize) {
+										t.logSize = st.size;
+										t.lastLogGrowthAt = Date.now();
+										t.stuckNotified = false; // log alive → re-arm
+										return;
+									}
+									const silent = Date.now() - t.lastLogGrowthAt;
+									if (silent < BG_STUCK_S * 1000 || t.stuckNotified) return;
+									t.stuckNotified = true; // one notice per silent period
+									safeNotify(
+										`⏱ [autobg] ${t.id} still running after ${fmtDur(Date.now() - t.startedAt)} with no log output for ${fmtDur(silent)} — check it (/autobg, log ${t.logPath}).`,
+										"warning",
+									);
+									wake(
+										pi,
+										t.id,
+										`[autobg] Background task ${t.id} (pid ${t.pid}) has run ${fmtDur(Date.now() - t.startedAt)} with no log output for ${fmtDur(silent)}. ` +
+											`command: ${t.command.trim().split("\n")[0]?.slice(0, 72)}\n` +
+											`If this is expected (quiet long run: sleep, training, transfer), ignore. ` +
+											`If suspicious: inspect the process (ps; the log at ${t.logPath}), and if it is stuck, kill ${t.pid} and proceed differently.`,
+									);
+								} catch {
+									/* stat raced with log removal at finish — nothing to guard */
+								}
+							})();
 						}, TOUCH_S * 1000);
 						task.touch.unref?.();
 
@@ -399,6 +437,7 @@ function createDemotableOps(pi: ExtensionAPI): BashOperations {
 							`- task id: ${id} (footer chip; /autobg, /task-status)\n` +
 							`- full log: ${task.logPath}\n` +
 							`- you will be notified on exit (exit code + output tail); pick up from there\n` +
+								`- sanity-check now if you expected this to finish much sooner: tail the log once — it may be stuck (waiting on input/network) rather than slow; slow-but-alive is fine to leave running\n` +
 							`- proceed with other work meanwhile; tail the log to check on it; do NOT re-run this command\n`,
 							),
 						);

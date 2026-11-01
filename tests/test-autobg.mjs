@@ -22,6 +22,7 @@ process.env.PI_AUTOBG_ABORT_S = "60";
 process.env.PI_AUTOBG_TICK_MS = "1000";
 process.env.PI_AUTOBG_MAX_AUTO_ABORTS = "1"; // cap exercised in one extra window
 process.env.PI_AUTOBG_NEVER_ABORT = "never_tool";
+process.env.PI_AUTOBG_BG_STUCK_S = "60";
 
 const mod = await import("../autobg.ts");
 const sent = [];
@@ -128,6 +129,30 @@ ok(!notes.some(([m]) => m.includes("alive_tool")), "C: updates keep the stall cl
 ok(!notes.some(([m]) => m.includes("read")), "C: builtin read is on the skip list");
 await handlers.tool_execution_end({ toolCallId: "w5" }, uiCtx);
 await handlers.tool_execution_end({ toolCallId: "r1" }, uiCtx);
+
+// ── window D: bg stuck watch — quiet bg task gets one check-up wake ────
+{
+	sent.length = 0;
+	notes.length = 0;
+	const r = await run({ command: "sleep 200" });
+	ok(r.content[0].text.includes("[autobg]"), "D: demoted at 10 s");
+	ok(r.content[0].text.includes("sanity-check now"), "D: sanity-check line present");
+	await sleep(70000); // demote at 10s + stuck threshold 60s
+	const stuck = sent.find(([m]) => m.includes("no log output for"));
+	ok(stuck, "D: stuck check-up wake sent to model");
+	ok(stuck[0].includes("sleep 200"), "D: wake carries the command");
+	ok(notes.some(([m, k]) => k === "warning" && m.includes("still running")), "D: user notified too");
+	ok(sent.filter(([m]) => m.includes("no log output for")).length === 1, "D: exactly one notice per silent period");
+	// clean up: kill the detached sleeper so later windows start clean.
+	// NOTE: parse the pid from the demote notice — pgrep -f would self-match
+	// the hosting bash (pi runs `bash -c '<full command>'`, whose cmdline
+	// contains this very "sleep 200" literal) and SIGKILL the whole test tree.
+	const pidm = r.content[0].text.match(/pid (\d+)/);
+	try {
+		if (pidm) process.kill(-Number(pidm[1]), "SIGKILL");
+	} catch { /* already gone */ }
+	await sleep(1500);
+}
 
 // ── session shutdown: no more wakes ─────────────────────────────────────
 {

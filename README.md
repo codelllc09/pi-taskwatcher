@@ -86,6 +86,13 @@ message wakes it with the exit code, duration and output tail. A `kind:"bg"`
 status file shows the footer chip. Esc still kills during the synchronous
 phase; a detached task is independent.
 
+The demote notice asks the model for a one-shot sanity check (it knows best
+whether this command should have finished long ago), and a **stuck watch**
+guards detached tasks: still running with no log growth for
+`PI_AUTOBG_BG_STUCK_S` (default 30 min) → one check-up wake per silent
+period (expected quiet runs are told to ignore it; stuck ones get the pid to
+kill).
+
 **Generic stall watch (MCP tools, other extensions).** Only bash exposes an
 execution seam, so a hung non-bash tool is detected, not fixed: silent for
 `PI_AUTOBG_STALL_S` (180 s) → the model is told (queued) and the user
@@ -104,7 +111,8 @@ on its own.
 watchdog) · `PI_TASK_WAKE_MIN` · `PI_TASK_MAX_FILE_KB` · `PI_TASK_MAX_FILES` ·
 `PI_TASK_ISOLATION` · autobg: `PI_AUTOBG_DEMOTE_MS` · `PI_AUTOBG_STALL_S` ·
 `PI_AUTOBG_ABORT_S` (0 disables) · `PI_AUTOBG_MAX_AUTO_ABORTS` ·
-`PI_AUTOBG_NEVER_ABORT` (comma list) · `PI_AUTOBG_DIR`
+`PI_AUTOBG_NEVER_ABORT` (comma list) · `PI_AUTOBG_BG_STUCK_S` (bg stuck
+watch, 0 disables) · `PI_AUTOBG_DIR`
 
 All values are sanitized: garbage/zero/negative fall back to the default
 and the ignored value is reported at session start.
