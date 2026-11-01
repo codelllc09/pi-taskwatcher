@@ -152,6 +152,8 @@ await handlers.tool_execution_end({ toolCallId: "r1" }, uiCtx);
 		if (pidm) process.kill(-Number(pidm[1]), "SIGKILL");
 	} catch { /* already gone */ }
 	await sleep(1500);
+	const obit = sent.find(([m]) => m.includes("finished"));
+	ok(obit && obit[0].includes("exit 137"), "D: signal-killed bg task reports exit 137, not null");
 }
 
 // ── session shutdown: no more wakes ─────────────────────────────────────

@@ -331,7 +331,10 @@ function createDemotableOps(pi: ExtensionAPI): BashOperations {
 						if (t?.touch) clearInterval(t.touch);
 						tasks.delete(id);
 						const dur = fmtDur(Date.now() - (t?.startedAt ?? Date.now()));
-						const exitCode = child.exitCode;
+						// signal-killed shells have no exit code: shell convention 128+sig
+						// (same as the synchronous path) — 'exit null' tells nobody anything
+						const sig = child.signalCode;
+						const exitCode = child.exitCode ?? (sig ? 128 + (os.constants.signals[sig] ?? 0) : 1);
 						const mark = exitCode === 0 ? "✅" : "⚠️";
 						await writeStatus(id, {
 							done: 1,
