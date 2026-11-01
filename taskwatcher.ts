@@ -427,7 +427,9 @@ export default function (pi: ExtensionAPI) {
 			try {
 				pi.sendUserMessage(
 					`⚠️ [task-status] "${label}"${counts}${note} has shown no progress for ${min} min. ` +
-						`If it should still be running: check the process (ps aux | grep …) and its logs for the stall cause, then resume reporting with task_progress. ` +
+						`NOTE: this notice was queued while the agent was busy and may be STALE — first re-check the current state ` +
+						`(read ${path.join(STATUS_DIR, `${id}.json`)} or run /task-status) before acting; if the task has since progressed or completed, ignore it and move on. ` +
+						`If genuinely stalled: check the process (ps aux | grep …) and its logs for the stall cause, then resume reporting with task_progress. ` +
 						`If it finished silently or was abandoned: close it out with task_progress {"action":"done"|"remove","id":"${id}"}.`,
 					{ deliverAs: "followUp" },
 				);
