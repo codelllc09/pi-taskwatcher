@@ -104,6 +104,30 @@ tools. MCP servers configured without a `timeout` are announced at startup:
 with a timeout, a hung call returns an error result and the model continues
 on its own.
 
+## Wake-at (v0.5.0) — one-shot alarms, set by you
+
+The watchdog family wakes the agent on *conditions* (stalled task, hung
+tool, exited bg command). `/wake-at` adds the missing axis: *time*,
+chosen by the user. One-shot by design — no loop tax; the "is this wake
+worth the tokens?" decision stays with the person who set it.
+
+```text
+/wake-at 30m check the build result      # relative: 30s|30m|2h
+/wake-at 14:00 review the test run       # absolute HH:MM; tomorrow if past
+/wake-at            (or: /wake-at list)  # pending wakes
+/wake-at cancel w1                       # cancel
+```
+
+Delivery uses the same follow-up channel as the stale nudge: an idle
+agent wakes immediately, a busy one gets it queued — never interrupted;
+the message carries a may-be-stale hint. An absolute time inside the
+`PI_WAKE_MIN_S` floor window rolls to tomorrow (an alarm can never sneak
+past the floor). Wakes are **session-scoped and in-memory**: they die with
+the session (announced, never silently), and nothing touches disk.
+Cross-session scheduling is cron's job — write a status file and let the
+footer/nudge pick it up. Delays are floored at `PI_WAKE_MIN_S` (60 s) and
+capped at 24 h; at most `PI_WAKE_MAX` (5) wakes pending per session.
+
 ## Env
 
 `PI_TASK_STATUS_DIR` · `PI_TASK_MAX` · `PI_TASK_REFRESH_MS` (floor 500 ms) ·
@@ -112,7 +136,8 @@ watchdog) · `PI_TASK_WAKE_MIN` · `PI_TASK_MAX_FILE_KB` · `PI_TASK_MAX_FILES` 
 `PI_TASK_ISOLATION` · autobg: `PI_AUTOBG_DEMOTE_MS` · `PI_AUTOBG_STALL_S` ·
 `PI_AUTOBG_ABORT_S` (0 disables) · `PI_AUTOBG_MAX_AUTO_ABORTS` ·
 `PI_AUTOBG_NEVER_ABORT` (comma list) · `PI_AUTOBG_BG_STUCK_S` (bg stuck
-watch, 0 disables) · `PI_AUTOBG_DIR`
+watch, 0 disables) · `PI_AUTOBG_DIR` · wake: `PI_WAKE_MAX` (5) · `PI_WAKE_MIN_S`
+(60)
 
 All values are sanitized: garbage/zero/negative fall back to the default
 and the ignored value is reported at session start.
@@ -140,8 +165,8 @@ pi install npm:pi-taskwatcher
 ## Tests
 
 ```bash
-npm test   # 140+ assertions: tool roundtrip, watchdog lifecycle, anti-freeze,
-           # env sanitization, zombie-proof exit, failure surfacing
+npm test   # 185+ assertions: tool roundtrip, watchdog lifecycle, anti-freeze,
+           # env sanitization, zombie-proof exit, failure surfacing, wake-at
 ```
 
 ## License

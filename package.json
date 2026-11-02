@@ -1,7 +1,7 @@
 {
   "name": "pi-taskwatcher",
-  "version": "0.4.2",
-  "description": "Progress chips for background tasks + auto-detached bash + hung-tool watchdog",
+  "version": "0.5.0",
+  "description": "Progress chips for background tasks + auto-detached bash + hung-tool watchdog + one-shot wake-ups",
   "license": "MIT",
   "keywords": [
     "pi",
@@ -14,7 +14,8 @@
   "pi": {
     "extensions": [
       "./taskwatcher.ts",
-      "./autobg.ts"
+      "./autobg.ts",
+      "./wake.ts"
     ]
   },
   "repository": {
@@ -30,11 +31,12 @@
     "typebox": "*"
   },
   "scripts": {
-    "test": "node tests/test-extension.mjs && node tests/test-hardening.mjs && node tests/test-e2e.mjs && node tests/test-isolation.mjs && node tests/test-autobg.mjs && node tests/test-stuck-enolog.mjs"
+    "test": "node tests/test-extension.mjs && node tests/test-hardening.mjs && node tests/test-e2e.mjs && node tests/test-isolation.mjs && node tests/test-autobg.mjs && node tests/test-stuck-enolog.mjs && node tests/test-wake.mjs"
   },
   "files": [
     "taskwatcher.ts",
     "autobg.ts",
+    "wake.ts",
     "scripts/",
     "!scripts/__pycache__",
     "docs/",

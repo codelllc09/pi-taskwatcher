@@ -70,7 +70,7 @@ task_status.py done --id asr      # 还有：rm / ls
 
 `PI_TASK_STATUS_DIR` · `PI_TASK_MAX` · `PI_TASK_REFRESH_MS`（下限 500ms）·
 `PI_TASK_HIDE_MIN` · `PI_TASK_STALE_SEC` · `PI_TASK_WAKE`（"0" 关闭看门狗）·
-`PI_TASK_WAKE_MIN` · `PI_TASK_MAX_FILE_KB` · `PI_TASK_MAX_FILES` · `PI_TASK_ISOLATION`
+`PI_TASK_WAKE_MIN` · `PI_TASK_MAX_FILE_KB` · `PI_TASK_MAX_FILES` · `PI_TASK_ISOLATION` · autobg: `PI_AUTOBG_DEMOTE_MS` · `PI_AUTOBG_STALL_S` · `PI_AUTOBG_ABORT_S`(0 关闭) · `PI_AUTOBG_MAX_AUTO_ABORTS` · `PI_AUTOBG_NEVER_ABORT`(逗号列表) · `PI_AUTOBG_BG_STUCK_S`(0 关闭) · `PI_AUTOBG_DIR` · wake: `PI_WAKE_MAX`(5) · `PI_WAKE_MIN_S`(60)
 
 所有值都经消毒：垃圾值/零/负数回退到默认值，并在会话启动时报告被忽略的值。
 
@@ -93,8 +93,8 @@ pi install npm:pi-taskwatcher
 ## 测试
 
 ```bash
-npm test   # 102 项断言：工具往返、看门狗生命周期、防冻结、
-           # 环境消毒、僵尸进程防护、失败暴露
+npm test   # 185+ 项断言：工具往返、看门狗生命周期、防冻结、
+           # 环境消毒、僵尸进程防护、失败暴露、wake-at 闹钟
 ```
 
 ## 许可证
@@ -120,3 +120,23 @@ MIT — 见 [LICENSE](../LICENSE)。
 不再把任务移出唤醒候选(旧行为:挂得越久越没人提醒);`kind:"bg"` 任务跳过
 stale 唤醒。educator recipe 改教 `jq` 读-改-写——部分覆盖式直写会静默丢
 `owner`,任务随即从本会话的看门狗里消失(此前 nudge"时灵时不灵"的主因)。
+
+## Wake-at(v0.5.0)— 一次性闹钟,由你设定
+
+看门狗家族都在**条件**触发(任务停滞、工具挂死、后台命令退出),`/wake-at`
+补上缺的那根轴:**时间**,由用户指定。一次性设计——没有循环税;"这次唤醒值
+不值这些 token"的判断权留给设闹钟的人。
+
+```text
+/wake-at 30m 检查构建结果        # 相对时间:30s|30m|2h
+/wake-at 14:00 看看测试跑完没有  # 绝对 HH:MM;已过则明天
+/wake-at         (或 /wake-at list)  # 查看待触发列表
+/wake-at cancel w1               # 取消
+```
+
+投递走与 stale 唤醒相同的 followUp 通道:空闲立即唤醒,忙时排队——绝不
+打断;消息自带"可能已过时"提示。落在 `PI_WAKE_MIN_S` 下限窗口内的绝对
+时刻顺延到明天(闹钟永远绕不过下限)。闹钟**会话内、纯内存**:随会话结束作废
+(会公告丢弃数,绝不静默),不落盘。跨会话调度是 cron 的活——写个状态
+文件,footer/看门狗自会接手。延迟下限 `PI_WAKE_MIN_S`(60 秒)、上限 24
+小时;每会话最多 `PI_WAKE_MAX`(5)个待触发闹钟。
