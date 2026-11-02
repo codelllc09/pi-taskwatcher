@@ -79,7 +79,10 @@ Since v0.4.0 the nudge set is **all own tasks**, not only the rendered ones:
 `PI_TASK_HIDE_MIN` fades the chip but never removes a task from the watchdog —
 a task hung for 35 min is nudged just like one hung for 6 min (previously the
 longer it hung, the quieter it got). Tasks stamped `kind:"bg"` are skipped:
-`autobg` delivers their completion wake itself.
+`autobg` delivers their completion wake itself. Scripts that update status
+files directly must read-modify-write (jq, or the CLI's `--owner`): a partial
+overwrite silently drops `owner` and the task falls out of this
+conversation's watchdog.
 
 ## Autobg (v0.4.0) — long-running tool calls never stall the agent
 
@@ -109,7 +112,7 @@ tools. MCP servers configured without a `timeout` are announced at startup:
 with a timeout, a hung call returns an error result and the model continues
 on its own.
 
-## Wake-at (v0.5.0) — one-shot alarms, set by you
+## Wake (v0.5.0) — one-shot alarms, set by you
 
 The watchdog family wakes the agent on *conditions* (stalled task, hung
 tool, exited bg command). `/wake` adds the missing axis: *time*,
@@ -119,7 +122,7 @@ worth the tokens?" decision stays with the person who set it.
 ```text
 /wake 30m check the build result      # relative: 30s|30m|2h
 /wake 14:00 review the test run       # absolute HH:MM; tomorrow if past
-/wake            (or: /wake list)  # pending wakes
+/wake list                            # pending wakes
 /wake cancel w1                       # cancel
 ```
 
@@ -174,7 +177,7 @@ pi install npm:pi-taskwatcher
 ## Tests
 
 ```bash
-npm test   # 185+ assertions: tool roundtrip, watchdog lifecycle, anti-freeze,
+npm test   # 199 assertions: tool roundtrip, watchdog lifecycle, anti-freeze,
            # env sanitization, zombie-proof exit, failure surfacing, wake
 ```
 
