@@ -103,14 +103,23 @@ kill).
 
 **Generic stall watch (MCP tools, other extensions).** Only bash exposes an
 execution seam, so a hung non-bash tool is detected, not fixed: silent for
-`PI_AUTOBG_STALL_S` (180 s) → the model is told (queued) and the user
-informed; silent for `PI_AUTOBG_ABORT_S` (600 s) → the run is aborted — the
-only channel that frees a model blocked on a hung tool — with an explanation
-so it can retry differently. Per-tool cap `PI_AUTOBG_MAX_AUTO_ABORTS` (2)
-prevents retry loops; `PI_AUTOBG_NEVER_ABORT` exempts legitimately slow
-tools. MCP servers configured without a `timeout` are announced at startup:
-with a timeout, a hung call returns an error result and the model continues
-on its own.
+`PI_AUTOBG_STALL_S` (180 s) → the user is informed and the model gets a
+**steered** note — steer lands between turns of a running agent, before its
+next decision, because a busy agent inside a tool-call loop never drains
+followUps until it stops; silent for `PI_AUTOBG_ABORT_S` (600 s) → the run is
+aborted — the only channel that frees a model blocked on a hung tool — with
+an explanation so it can retry differently. Stall notes are budgeted per
+tool (`PI_AUTOBG_MAX_STALL_NOTES`, default 2): a tool that legitimately
+takes minutes per call (e.g. a single long VLM request) would otherwise
+re-educate the model on every invocation — the second note announces the
+mute, later ones are silent, and the abort fuse stays armed regardless.
+When a stalled call settles, only one outcome adds a message: completed
+gets a short "prefer stepwise/backgroundable" retrospective (followUp);
+an abort explains itself, and a failed call's result is already in context.
+Per-tool cap `PI_AUTOBG_MAX_AUTO_ABORTS` (2) prevents retry loops;
+`PI_AUTOBG_NEVER_ABORT` exempts legitimately slow tools. MCP servers
+configured without a `timeout` are announced at startup: with a timeout, a
+hung call returns an error result and the model continues on its own.
 
 ## Wake (v0.5.0) — one-shot alarms, set by you
 
@@ -147,9 +156,9 @@ capped at 24 h; at most `PI_WAKE_MAX` (5) wakes pending per session.
 watchdog) · `PI_TASK_WAKE_MIN` · `PI_TASK_MAX_FILE_KB` · `PI_TASK_MAX_FILES` ·
 `PI_TASK_ISOLATION` · autobg: `PI_AUTOBG_DEMOTE_MS` · `PI_AUTOBG_STALL_S` ·
 `PI_AUTOBG_ABORT_S` (0 disables) · `PI_AUTOBG_MAX_AUTO_ABORTS` ·
-`PI_AUTOBG_NEVER_ABORT` (comma list) · `PI_AUTOBG_BG_STUCK_S` (bg stuck
-watch, 0 disables) · `PI_AUTOBG_DIR` · wake: `PI_WAKE_MAX` (5) · `PI_WAKE_MIN_S`
-(60)
+`PI_AUTOBG_NEVER_ABORT` (comma list) · `PI_AUTOBG_MAX_STALL_NOTES` (per-tool
+stall-note budget, default 2) · `PI_AUTOBG_BG_STUCK_S` (bg stuck watch, 0
+disables) · `PI_AUTOBG_DIR` · wake: `PI_WAKE_MAX` (5) · `PI_WAKE_MIN_S` (60)
 
 All values are sanitized: garbage/zero/negative fall back to the default
 and the ignored value is reported at session start.

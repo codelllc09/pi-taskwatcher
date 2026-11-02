@@ -103,24 +103,31 @@ notes.length = 0;
 await handlers.tool_execution_start({ toolCallId: "w1", toolName: "hung_tool", args: {} }, uiCtx);
 await sleep(31500);
 ok(notes.some(([m, k]) => k === "warning" && m.includes("hung_tool") && m.includes("no progress")), "A: stall notice to user at 30 s");
-ok(sent.some(([m]) => m.includes("hung_tool") && m.includes("went silent")), "A: stall notice queued for the model");
+ok(sent.some(([m, o]) => m.includes("hung_tool") && m.includes("still running") && o?.deliverAs === "steer"), "A: stall note steered (not queued behind the busy run)");
+ok(!sent.some(([m]) => m.includes("eventually completed")), "A: no two-way-guess retrospective wording");
 await sleep(31000);
 ok(aborts === 1, "A: auto-abort fired at 60 s silence");
 ok(sent.some(([m]) => m.includes("judged hung") && m.includes("auto-aborted")), "A: abort explanation queued for the model");
 await handlers.tool_execution_end({ toolCallId: "w1" }, uiCtx);
+ok(!sent.some(([m]) => m.includes("despite an earlier stall")), "A: aborted settle sends no retrospective (abort notice covers it)");
 
 // ── window B: cap reached (2nd hang, MAX=1 → notify only) ∥ never-abort ──
 sent.length = 0;
 notes.length = 0;
 const abortsBeforeB = aborts;
 await handlers.tool_execution_start({ toolCallId: "w2", toolName: "hung_tool", args: {} }, uiCtx);
+await handlers.tool_execution_start({ toolCallId: "w3", toolName: "hung_tool", args: {} }, uiCtx); // 3rd strike: budget spent after w2's note
 await handlers.tool_execution_start({ toolCallId: "w4", toolName: "never_tool", args: {} }, uiCtx);
 await sleep(62000);
 ok(aborts === abortsBeforeB, "B: capped tool is not aborted again");
 ok(sent.join("\n").includes("no further auto-aborts") || notes.join("\n").includes("no further auto-aborts"), "B: cap explanation present");
 ok(aborts === abortsBeforeB, "B: never-abort tool untouched (same window)");
 ok(notes.some(([m]) => m.includes("never_tool")), "B: never-abort tool still gets informational notice");
+ok(sent.some(([m, o]) => m.includes("hung_tool") && o?.deliverAs === "steer" && m.includes("muted this session")), "B: 2nd stall note carries the mute warning");
+const hungNotes = sent.filter(([m, o]) => m.includes("hung_tool") && m.includes("still running") && o?.deliverAs === "steer").length;
+ok(hungNotes === 1, `B: per-tool budget holds in-window: w2 notes, w3 silent (got ${hungNotes})`);
 await handlers.tool_execution_end({ toolCallId: "w2" }, uiCtx);
+await handlers.tool_execution_end({ toolCallId: "w3" }, uiCtx);
 await handlers.tool_execution_end({ toolCallId: "w4" }, uiCtx);
 
 // ── window C: update re-arm ∥ skip list (fast tick) ─────────────────────
@@ -135,6 +142,21 @@ ok(!notes.some(([m]) => m.includes("alive_tool")), "C: updates keep the stall cl
 ok(!notes.some(([m]) => m.includes("read")), "C: builtin read is on the skip list");
 await handlers.tool_execution_end({ toolCallId: "w5" }, uiCtx);
 await handlers.tool_execution_end({ toolCallId: "r1" }, uiCtx);
+
+// ── window E: deferred retrospective — outcome-specific, budget-aware ──
+sent.length = 0;
+notes.length = 0;
+await handlers.tool_execution_start({ toolCallId: "e1", toolName: "slow_tool", args: {} }, uiCtx);
+await sleep(31500);
+ok(sent.some(([m, o]) => m.includes("slow_tool") && o?.deliverAs === "steer" && !m.includes("muted")), "E: first stall note (no mute warning yet)");
+await handlers.tool_execution_end({ toolCallId: "e1", isError: false }, uiCtx);
+ok(sent.some(([m, o]) => m.includes("slow_tool") && m.includes("despite an earlier stall") && o?.deliverAs === "followUp"), "E: completed settle → retrospective (followUp)");
+await handlers.tool_execution_start({ toolCallId: "e2", toolName: "slow_tool", args: {} }, uiCtx);
+await sleep(31500);
+ok(sent.some(([m]) => m.includes("slow_tool") && m.includes("muted this session")), "E: second note carries mute warning");
+await handlers.tool_execution_end({ toolCallId: "e2", isError: true }, uiCtx);
+const retros = sent.filter(([m]) => m.includes("slow_tool") && m.includes("despite an earlier stall")).length;
+ok(retros === 1, `E: failed settle sends no retrospective (result already in context; got ${retros})`);
 
 // ── window D: bg stuck watch — quiet bg task gets one check-up wake ────
 {

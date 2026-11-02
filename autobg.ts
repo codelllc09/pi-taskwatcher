@@ -143,6 +143,7 @@ interface Watch {
 	startedAt: number;
 	lastActivityAt: number;
 	stalledNotified: boolean; // one stall notice per silent period
+	stallAnnounced: boolean; // this call's stall notice was sent (budget allowed)
 	aborted: boolean; // one abort per call
 }
 
@@ -154,6 +155,12 @@ let statusFailAnnounced = false;
 const tasks = new Map<string, BgTask>();
 const watched = new Map<string, Watch>();
 const abortCount = new Map<string, number>();
+/** per-tool stall-notice budget (session-scoped): a tool that stalls on every
+ *  call — e.g. a VLM tool whose single long API call never streams — would
+ *  otherwise re-educate the model on each invocation (observed: four
+ *  near-identical notes queued in one busy run). Same shape as abortCount. */
+const stallNotes = new Map<string, number>();
+const MAX_STALL_NOTES = envNum("PI_AUTOBG_MAX_STALL_NOTES", 2, 1, 100);
 const wakeFailAnnounced = new Set<string>();
 let uiCtx: any;
 let tickTimer: ReturnType<typeof setInterval> | undefined;
@@ -207,8 +214,12 @@ function killTree(pid: number) {
 	}
 }
 
-/** Wake the model (queued; never interrupts). Failures are announced (§4). */
-function wake(pi: ExtensionAPI, key: string, msg: string) {
+/** Wake the model. "steer" lands between turns of a running agent — the model
+ *  sees it before its next decision (the whole point for stall notes: a busy
+ *  agent locked in a tool-call loop never drains followUps until it stops);
+ *  "followUp" waits for idle (terminal semantics: finished, aborted, stuck).
+ *  Failures are announced (§4). */
+function wake(pi: ExtensionAPI, key: string, msg: string, mode: "followUp" | "steer" = "followUp") {
 	try {
 		if (typeof pi.sendUserMessage !== "function") {
 			if (!wakeFailAnnounced.has(key)) {
@@ -217,7 +228,7 @@ function wake(pi: ExtensionAPI, key: string, msg: string) {
 			}
 			return;
 		}
-		pi.sendUserMessage(`${msg}\n(sent ${stampNow()})`, { deliverAs: "followUp" });
+		pi.sendUserMessage(`${msg}\n(sent ${stampNow()})`, { deliverAs: mode });
 	} catch (e) {
 		if (!wakeFailAnnounced.has(key)) {
 			wakeFailAnnounced.add(key);
@@ -519,20 +530,34 @@ function tick(pi: ExtensionAPI) {
 		const silent = now - w.lastActivityAt;
 		if (silent >= STALL_S * 1000 && !w.stalledNotified) {
 			w.stalledNotified = true;
-			safeNotify(
-				`⏱ Tool ${w.toolName} has run ${fmtDur(now - w.startedAt)} (${fmtDur(silent)} with no progress).` +
-					(ABORT_S > 0 && !NEVER_ABORT.has(w.toolName)
-						? `If it stays silent for ${fmtDur(ABORT_S * 1000)}, the run will be auto-aborted and the agent woken to adjust.`
-						: `This tool is never auto-aborted; press Esc if you are sure it hung.`),
-				"warning",
-			);
-			wake(
-				pi,
-				w.toolCallId,
-				`[autobg] Note: tool ${w.toolName} went silent for ${fmtDur(silent)} during this call. ` +
-					`If it eventually completed, treat this as a retrospective — prefer stepwise or backgroundable calls for this kind of work; ` +
-					`if it was aborted, adjust per the abort notice.`,
-			);
+			const n = stallNotes.get(w.toolName) ?? 0;
+			if (n < MAX_STALL_NOTES) {
+				stallNotes.set(w.toolName, n + 1);
+				w.stallAnnounced = true;
+				const last = n + 1 >= MAX_STALL_NOTES ? ` Further stall notices for ${w.toolName} are muted this session; auto-abort protection still applies.` : "";
+				safeNotify(
+					`⏱ Tool ${w.toolName} has run ${fmtDur(now - w.startedAt)} (${fmtDur(silent)} with no progress).` +
+						(ABORT_S > 0 && !NEVER_ABORT.has(w.toolName)
+							? `If it stays silent for ${fmtDur(ABORT_S * 1000)}, the run will be auto-aborted and the agent woken to adjust.`
+							: `This tool is never auto-aborted; press Esc if you are sure it hung.`) +
+						last,
+					"warning",
+				);
+				// steer, not followUp: a busy agent inside a tool-call loop never
+				// drains followUps until it stops entirely — the note would land
+				// after every result is already in context. steer reaches the model
+					// before its NEXT decision, the only moment it can change course
+					// (smaller inputs, stepwise calls, a different tool).
+				wake(
+					pi,
+					w.toolCallId,
+					`[autobg] Note: tool ${w.toolName} has been silent for ${fmtDur(silent)} (still running). ` +
+						`If this kind of tool is legitimately slow (one long call, no progress channel), prefer smaller or stepwise invocations over queuing more of the same; ` +
+						`a true hang is auto-aborted at ${fmtDur(ABORT_S * 1000)} and reported.${last}`,
+					"steer",
+				);
+			}
+			// budget spent (n >= MAX_STALL_NOTES): silent — abort protection still applies
 		}
 		if (ABORT_S > 0 && !NEVER_ABORT.has(w.toolName) && silent >= ABORT_S * 1000 && !w.aborted) {
 			w.aborted = true; // one verdict per call — settle either branch below
@@ -649,6 +674,7 @@ export default function (pi: ExtensionAPI) {
 			startedAt: Date.now(),
 			lastActivityAt: Date.now(),
 			stalledNotified: false,
+			stallAnnounced: false,
 			aborted: false,
 		});
 		if (tickTimer === undefined) {
@@ -664,7 +690,20 @@ export default function (pi: ExtensionAPI) {
 		}
 	});
 	pi.on("tool_execution_end", async (event) => {
+		const w = watched.get(event.toolCallId);
 		watched.delete(event.toolCallId);
+		// Deferred retrospective (plan c): the note is composed at settle time,
+		// when the outcome is a fact instead of a two-way guess. Only the
+		// "completed despite the stall" outcome needs it — abort explains
+		// itself with its own notice, and a failed call's result is already
+		// in context; re-narrating either would be pure queue noise.
+		if (w?.stallAnnounced && !w.aborted && !event.isError) {
+			wake(
+				pi,
+				event.toolCallId,
+				`[autobg] Note: tool ${w.toolName} completed after ${fmtDur(Date.now() - w.startedAt)}, despite an earlier stall — for this kind of work prefer stepwise or backgroundable calls.`,
+			);
+		}
 	});
 	pi.on("agent_end", async () => {
 		watched.clear(); // run over (incl. Esc): no orphans

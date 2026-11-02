@@ -91,9 +91,16 @@ task_status.py done --id asr      # 还有：rm / ls
 真卡死的拿到 pid 可杀）。
 
 **通用静默观察（MCP 工具、其他扩展）。** 只有 bash 有执行层接缝，其他工具
-挂死只能"检测+解脱"：静默 `PI_AUTOBG_STALL_S`（180 秒）→ 排队告知模型、
-提示用户；静默 `PI_AUTOBG_ABORT_S`（600 秒）→ 中止 run（被挂死工具阻塞的
-模型唯一的解脱通道）并附说明让模型换法重试。每工具自动中止上限（默认
+挂死只能"检测+解脱"：静默 `PI_AUTOBG_STALL_S`（180 秒）→ 提示用户，并向模型
+发 **steer** 插队提示——busy 的 agent 困在连环工具调用里时 followUp 要到
+它彻底停下才投递，而 steer 在下一决策点之前送达；静默
+`PI_AUTOBG_ABORT_S`（600 秒）→ 中止 run（被挂死工具阻塞的模型唯一的解脱
+通道）并附说明让模型换法重试。静默提示按工具限预算
+（`PI_AUTOBG_MAX_STALL_NOTES`，默认 2）：单次调用本就要几分钟的工具（如
+单次长 VLM 请求）否则每次调用都会被重复教育——第二条提示附静默预告，
+之后不再提示，自动中止保险丝始终在。静默过的调用结束时只有一种结局
+追加消息：正常完成发一条简短"建议分步/后台化"回顾（followUp）；中止
+有自己的说明，失败的结果本身就在上下文里。每工具自动中止上限（默认
 2 次）防重试死循环；`PI_AUTOBG_NEVER_ABORT` 白名单豁免合法慢工具。未配
 timeout 的 MCP server 开屏提醒——配了 timeout，挂死调用会自动返回错误
 结果，模型可自行继续。
@@ -126,7 +133,8 @@ timeout 的 MCP server 开屏提醒——配了 timeout，挂死调用会自动�
 
 `PI_TASK_STATUS_DIR` · `PI_TASK_MAX` · `PI_TASK_REFRESH_MS`（下限 500ms）·
 `PI_TASK_HIDE_MIN` · `PI_TASK_STALE_SEC` · `PI_TASK_WAKE`（"0" 关闭看门狗）·
-`PI_TASK_WAKE_MIN` · `PI_TASK_MAX_FILE_KB` · `PI_TASK_MAX_FILES` · `PI_TASK_ISOLATION` · autobg: `PI_AUTOBG_DEMOTE_MS` · `PI_AUTOBG_STALL_S` · `PI_AUTOBG_ABORT_S`(0 关闭) · `PI_AUTOBG_MAX_AUTO_ABORTS` · `PI_AUTOBG_NEVER_ABORT`(逗号列表) · `PI_AUTOBG_BG_STUCK_S`(0 关闭) · `PI_AUTOBG_DIR` · wake: `PI_WAKE_MAX`(5) · `PI_WAKE_MIN_S`(60)
+`PI_TASK_WAKE_MIN` · `PI_TASK_MAX_FILE_KB` · `PI_TASK_MAX_FILES` · `PI_TASK_ISOLATION` · autobg: `PI_AUTOBG_DEMOTE_MS` · `PI_AUTOBG_STALL_S` · `PI_AUTOBG_ABORT_S`(0 关闭) · `PI_AUTOBG_MAX_AUTO_ABORTS` · `PI_AUTOBG_NEVER_ABORT`(逗号列表) · `PI_AUTOBG_MAX_STALL_NOTES`(每工具静默
+提示预算，默认 2) · `PI_AUTOBG_BG_STUCK_S`(0 关闭) · `PI_AUTOBG_DIR` · wake: `PI_WAKE_MAX`(5) · `PI_WAKE_MIN_S`(60)
 
 所有值都经消毒：垃圾值/零/负数回退到默认值，并在会话启动时报告被忽略的值。
 
