@@ -1,6 +1,6 @@
 {
   "name": "pi-taskwatcher",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Progress chips for background tasks + auto-detached bash + hung-tool watchdog + one-shot wake-ups",
   "license": "MIT",
   "keywords": [
