@@ -70,6 +70,11 @@ injects a wake-up message into the session (`followUp`, queued behind a busy
 run, never interrupts) telling the agent what stalled and how to close it out.
 Progress re-arms the nudge. Stuck jobs surface themselves.
 
+Every queued notice (stale nudge, wake, autobg) stamps its build time —
+local clock with an explicit UTC offset — because a queued message may reach
+the agent long after it was built; the stamp lets it judge how stale the
+"N min" figures in it really are.
+
 Since v0.4.0 the nudge set is **all own tasks**, not only the rendered ones:
 `PI_TASK_HIDE_MIN` fades the chip but never removes a task from the watchdog —
 a task hung for 35 min is nudged just like one hung for 6 min (previously the
@@ -107,16 +112,20 @@ on its own.
 ## Wake-at (v0.5.0) — one-shot alarms, set by you
 
 The watchdog family wakes the agent on *conditions* (stalled task, hung
-tool, exited bg command). `/wake-at` adds the missing axis: *time*,
+tool, exited bg command). `/wake` adds the missing axis: *time*,
 chosen by the user. One-shot by design — no loop tax; the "is this wake
 worth the tokens?" decision stays with the person who set it.
 
 ```text
-/wake-at 30m check the build result      # relative: 30s|30m|2h
-/wake-at 14:00 review the test run       # absolute HH:MM; tomorrow if past
-/wake-at            (or: /wake-at list)  # pending wakes
-/wake-at cancel w1                       # cancel
+/wake 30m check the build result      # relative: 30s|30m|2h
+/wake 14:00 review the test run       # absolute HH:MM; tomorrow if past
+/wake            (or: /wake list)  # pending wakes
+/wake cancel w1                       # cancel
 ```
+
+`/wake` is the name since v0.5.1 — the bare verb fits both spec forms
+("at" only matched the absolute one). The old `/wake-at` name was
+removed outright: the package has no external users to carry.
 
 Delivery uses the same follow-up channel as the stale nudge: an idle
 agent wakes immediately, a busy one gets it queued — never interrupted;
@@ -166,7 +175,7 @@ pi install npm:pi-taskwatcher
 
 ```bash
 npm test   # 185+ assertions: tool roundtrip, watchdog lifecycle, anti-freeze,
-           # env sanitization, zombie-proof exit, failure surfacing, wake-at
+           # env sanitization, zombie-proof exit, failure surfacing, wake
 ```
 
 ## License

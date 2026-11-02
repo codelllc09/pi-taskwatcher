@@ -201,6 +201,23 @@ function isStale(t: Task): boolean {
 	return nowSec() - t.updated > STALE_AFTER_S;
 }
 
+/** Local wall clock with explicit UTC offset (ISO 8601), e.g. 2026-02-10T14:30:05+08:00.
+ *  Nudges are queued (deliverAs "followUp") and may reach the agent long after
+ *  they are built; the stamp lets it measure a notice's true age. Duplicated in
+ *  autobg.ts/wake.ts on purpose — the three modules share nothing at runtime. */
+function stampNow(): string {
+	const d = new Date();
+	const p = (x: number) => String(x).padStart(2, "0");
+	const off = -d.getTimezoneOffset(); // minutes east of UTC (ISO sign)
+	const sign = off >= 0 ? "+" : "-";
+	const a = Math.abs(off);
+	return (
+		`${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}` +
+		`T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}` +
+		`${sign}${p(Math.floor(a / 60))}:${p(a % 60)}`
+	);
+}
+
 function isVisible(t: Task): boolean {
 	return !t.updated || nowSec() - t.updated <= HIDE_AFTER_S;
 }
@@ -426,7 +443,7 @@ export default function (pi: ExtensionAPI) {
 			const min = Math.max(1, Math.round(idleS / 60));
 			try {
 				pi.sendUserMessage(
-					`⚠️ [task-status] "${label}"${counts}${note} has shown no progress for ${min} min. ` +
+					`⚠️ [task-status] "${label}"${counts}${note} has shown no progress for ${min} min (as of ${stampNow()}). ` +
 						`NOTE: this notice was queued while the agent was busy and may be STALE — first re-check the current state ` +
 						`(read ${path.join(STATUS_DIR, `${id}.json`)} or run /task-status) before acting; if the task has since progressed or completed, ignore it and move on. ` +
 						`If genuinely stalled: check the process (ps aux | grep …) and its logs for the stall cause, then resume reporting with task_progress. ` +

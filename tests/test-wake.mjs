@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * test-wake.mjs — functional tests for wake.ts (/wake-at)
+ * test-wake.mjs — functional tests for wake.ts (/wake)
  * Pure time-spec parsing, set/cancel lifecycle, caps, floors,
  * delivery + failure announcement, shutdown discard, zombie guard.
  * Run: node tests/test-wake.mjs
@@ -13,17 +13,18 @@ process.env.PI_WAKE_MAX = "3"; // low cap for the cap test
 const mod = await import("../wake.ts");
 
 const handlers = {};
-let registeredCmd;
+const registeredCmds = {};
 const sends = [];
 const notes = [];
 const events = [];
 
 const pi = {
 	on: (ev, h) => (handlers[ev] = h),
-	registerCommand: (_name, def) => (registeredCmd = def),
+	registerCommand: (name, def) => (registeredCmds[name] = def),
 	sendUserMessage: (text, opts) => sends.push([text, opts]),
 };
 mod.default(pi);
+const registeredCmd = registeredCmds.wake ?? registeredCmds["wake-at"];
 
 const uiCtx = { ui: { notify: (m, k) => notes.push([m, k]) } };
 await handlers.session_start({}, uiCtx);
@@ -39,6 +40,7 @@ const errNotes = () => notes.filter(([, k]) => k === "error");
 console.log("registration");
 ok(registeredCmd !== undefined, "command registered");
 ok(typeof registeredCmd.handler === "function", "handler is a function");
+ok(registeredCmds.wake !== undefined && Object.keys(registeredCmds).length === 1, "/wake is the single registered name (wake-at alias removed)");
 
 console.log("pure time-spec parsing (__wakeTestHookParse)");
 const parse = globalThis.__wakeTestHookParse;
@@ -87,6 +89,16 @@ ok(sends.length === 1, `fired exactly once (got ${sends.length})`);
 ok(sends[0]?.[1]?.deliverAs === "followUp", "delivered as followUp");
 ok(sends[0]?.[0]?.includes("hello world"), "message text carried");
 ok(sends[0]?.[0]?.includes("stale"), "stale-queue hint included");
+{
+	// queue delay is unbounded; the fire stamp must carry an explicit
+	// timezone and be parseable so the agent can judge the notice's age.
+	// Two numbers: the queue stamp (parseable, explicit timezone — the model
+	// diffs it against arrival time to gauge staleness) and a compound wait.
+	const m = /queued at (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}), \d+[smh][\dms]* after it was set\./.exec(sends[0]?.[0] ?? "");
+	ok(!!m, "fire message: queue stamp + compound wait, nothing else");
+	ok(!!m && Math.abs(Date.now() - Date.parse(m[1])) < 120_000, "queue stamp parses and is near-now (explicit timezone)");
+	ok(!/scheduled/.test(sends[0]?.[0] ?? ""), "no third (scheduled) clock");
+}
 await sleep(1200);
 ok(sends.length === 1, "one-shot: never fires again");
 await run("list");

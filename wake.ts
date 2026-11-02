@@ -1,21 +1,21 @@
 /**
- * wake.ts — user-scheduled one-shot wake-ups (/wake-at)
+ * wake.ts — user-scheduled one-shot wake-ups (/wake)
  *
  * ─────────────────────────────────────────────────────────────
  * §1 what it is
  *
  *    The taskwatcher family wakes the agent on *conditions* (task
- *    stalled, tool hung, bg command exited). /wake-at adds the one
+ *    stalled, tool hung, bg command exited). /wake adds the one
  *    missing axis: *time*, chosen by the user. One-shot by design —
  *    there is no loop tax, no recurring token cost; a wake fires once
  *    and is gone. The "is this wake worth the tokens?" decision stays
  *    with the person who set it.
  *
- *      /wake-at 30m check the build result
- *      /wake-at 14:00 review the test run        (today, or tomorrow
+ *      /wake 30m check the build result
+ *      /wake 14:00 review the test run        (today, or tomorrow
  *                                                  if already past)
- *      /wake-at            — or — /wake-at list   — pending wakes
- *      /wake-at cancel w1                          — cancel
+ *      /wake            — or — /wake list   — pending wakes
+ *      /wake cancel w1                          — cancel
  *
  *    Delivery is sendUserMessage({deliverAs:"followUp"}): wakes an
  *    idle agent immediately, queues behind a busy run — never
@@ -112,7 +112,34 @@ function parseWhen(
 const fmtClock = (ms: number): string => {
 	const d = new Date(ms);
 	const p = (x: number) => String(x).padStart(2, "0");
-	return `${p(d.getHours())}:${p(d.getMinutes())}`;
+	return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+};
+
+/** Elapsed seconds as a compound duration: 45s · 2m30s · 1h05m (same shape
+ *  as autobg's fmtDur — wake delays are frequently sub-minute/odd, and a
+ *  rounded "2m" hides the seconds the schedule itself is precise to). */
+const fmtDur = (s: number): string => {
+	if (s < 60) return `${s}s`;
+	const m = Math.floor(s / 60);
+	if (m < 60) return `${m}m${s % 60}s`;
+	return `${Math.floor(m / 60)}h${String(m % 60).padStart(2, "0")}m`;
+};
+
+/** Local wall clock with explicit UTC offset (ISO 8601), e.g. 2026-02-10T14:30:05+08:00.
+ *  Wakes are queued (deliverAs "followUp") and may reach the agent long after
+ *  they fire; the stamp lets it measure a notice's true age. Duplicated in
+ *  taskwatcher.ts/autobg.ts on purpose — the three modules share nothing at runtime. */
+const stampNow = (): string => {
+	const d = new Date();
+	const p = (x: number) => String(x).padStart(2, "0");
+	const off = -d.getTimezoneOffset(); // minutes east of UTC (ISO sign)
+	const sign = off >= 0 ? "+" : "-";
+	const a = Math.abs(off);
+	return (
+		`${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}` +
+		`T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}` +
+		`${sign}${p(Math.floor(a / 60))}:${p(a % 60)}`
+	);
 };
 
 const fmtIn = (atMs: number): string => {
@@ -147,10 +174,15 @@ export default function (pi: any) {
 	const fire = (w: Wake) => {
 		wakes.delete(w.id); // one-shot: fires once, gone — loops must be re-armed by the user
 		const elapsedS = Math.max(1, Math.round((Date.now() - w.setAtMs) / 1000));
-		const elapsed = elapsedS < 60 ? `${elapsedS}s` : `${Math.round(elapsedS / 60)}m`;
 		try {
 			pi.sendUserMessage(
-				`⏰ [wake-at] ${w.msg} — scheduled ${fmtClock(w.atMs)}, fired after ${elapsed}. ` +
+				// Two numbers, no more: the queue stamp — “queued at” names what the
+				// reader actually does with it (arrival − queued = delivery delay;
+				// “fired” would describe the alarm, not the notice) — and the wait
+				// since setting (a sleep-resume overrun shows up here too — the wait
+				// balloons past the spec). Third person throughout: the reader is
+				// the model, the setter is the user — “you” would mismatch both.
+				`⏰ [wake] ${w.msg} — queued at ${stampNow()}, ${fmtDur(elapsedS)} after it was set. ` +
 					`If the agent was busy this was queued and may be stale — re-check the current state before acting.`,
 				{ deliverAs: "followUp" },
 			);
@@ -159,7 +191,7 @@ export default function (pi: any) {
 			// no silent catch: announce once per wake
 			if (!w.failedNotified) {
 				w.failedNotified = true;
-				notify(uiCtx, `[wake-at] delivering "${w.id}" failed: ${String(e).slice(0, 120)}`, "error");
+				notify(uiCtx, `[wake] delivering "${w.id}" failed: ${String(e).slice(0, 120)}`, "error");
 				hook("fire-failed", { id: w.id });
 			}
 		}
@@ -178,10 +210,10 @@ export default function (pi: any) {
 		// pre-flight: a wake that cannot be delivered is useless — say so up front,
 		// not when the first one fires (fire()'s catch remains the last resort)
 		if (typeof pi.sendUserMessage !== "function") {
-			notify(ctx, "[wake-at] sendUserMessage unavailable in this harness — wake-ups cannot be delivered", "warning");
+			notify(ctx, "[wake] sendUserMessage unavailable in this harness — wake-ups cannot be delivered", "warning");
 		}
 		if (envIssues.length > 0) {
-			notify(ctx, `[wake-at] ignored invalid env: ${envIssues.join("; ")}`, "error");
+			notify(ctx, `[wake] ignored invalid env: ${envIssues.join("; ")}`, "error");
 		}
 	});
 
@@ -190,13 +222,16 @@ export default function (pi: any) {
 		for (const w of wakes.values()) clearTimeout(w.timer);
 		wakes.clear();
 		if (n > 0) {
-			notify(uiCtx, `[wake-at] session ended — discarded ${n} pending wake-up(s); /wake-at is session-scoped`, "warning");
+			notify(uiCtx, `[wake] session ended — discarded ${n} pending wake-up(s); /wake is session-scoped`, "warning");
 			hook("discard", n);
 		}
 	});
 
-	pi.registerCommand("wake-at", {
-		description: "Schedule a one-shot wake-up: /wake-at 30m <note> | HH:MM <note> | list | cancel <id>",
+	// Main name is /wake: the bare verb makes no prepositional promise, so both
+	// relative (30m) and absolute (14:00) specs read naturally — "wake at 30m"
+	// mismatched the preposition.
+	const wakeCmd = {
+		description: "Schedule a one-shot wake-up: /wake 30m <note> | HH:MM <note> | list | cancel <id>",
 		handler: async (args: string, ctx: any) => {
 			if (!uiCtx) uiCtx = ctx; // command may run before session_start in harnesses
 			const parts = (args ?? "").trim().split(/\s+/).filter(Boolean);
@@ -209,14 +244,14 @@ export default function (pi: any) {
 				const id = parts[1] ?? "";
 				const w = wakes.get(id);
 				if (!w) {
-					notify(ctx, `[wake-at] no such wake "${id || "?"}" — try /wake-at list`, "error");
+					notify(ctx, `[wake] no such wake "${id || "?"}" — try /wake list`, "error");
 					hook("reject", `cancel:${id || "?"}`);
 					return;
 				}
 				clearTimeout(w.timer);
 				wakes.delete(id);
 				hook("cancel", id);
-				notify(ctx, `[wake-at] cancelled "${id}" (${w.msg})`, "info");
+				notify(ctx, `[wake] cancelled "${id}" (${w.msg})`, "info");
 				return;
 			}
 
@@ -224,12 +259,12 @@ export default function (pi: any) {
 			const msg = parts.slice(1).join(" ") || "scheduled wake-up";
 			const parsed = parseWhen(spec, Date.now(), MIN_DELAY_S);
 			if ("error" in parsed) {
-				notify(ctx, `[wake-at] ${parsed.error}\nusage: /wake-at <n>s|m|h <note> · /wake-at HH:MM <note> · /wake-at list · /wake-at cancel <id>`, "error");
+				notify(ctx, `[wake] ${parsed.error}\nusage: /wake <n>s|m|h <note> · /wake HH:MM <note> · /wake list · /wake cancel <id>`, "error");
 				hook("reject", spec);
 				return;
 			}
 			if (wakes.size >= MAX_WAKES) {
-				notify(ctx, `[wake-at] ${wakes.size} pending wake-up(s) already at the PI_WAKE_MAX=${MAX_WAKES} cap — cancel one first (/wake-at list)`, "error");
+				notify(ctx, `[wake] ${wakes.size} pending wake-up(s) already at the PI_WAKE_MAX=${MAX_WAKES} cap — cancel one first (/wake list)`, "error");
 				hook("reject", "cap");
 				return;
 			}
@@ -246,9 +281,10 @@ export default function (pi: any) {
 			w.timer.unref?.(); // a pending wake must never keep the process alive
 			wakes.set(id, w);
 			hook("set", { id, atMs });
-			notify(ctx, `[wake-at] ${id} will fire at ${fmtClock(atMs)} (in ${fmtIn(atMs)}): ${msg}`, "info");
+			notify(ctx, `[wake] ${id} will fire at ${fmtClock(atMs)} (in ${fmtIn(atMs)}): ${msg}`, "info");
 		},
-	});
+	};
+	pi.registerCommand("wake", wakeCmd);
 
 	// §3: test observation only — pure functions / events, no prod branches
 	const g = globalThis as any;

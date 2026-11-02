@@ -93,6 +93,12 @@ await new Promise((r2) => setTimeout(r2, 1300));
 ok(toolCalls.sendUserMessage.length === 1, `stale task nudged exactly once (got ${toolCalls.sendUserMessage.length})`);
 ok(toolCalls.sendUserMessage[0]?.[0]?.includes('"Stuck" 2/10'), "nudge carries facts");
 ok(toolCalls.sendUserMessage[0]?.[1]?.deliverAs === "followUp", "nudge queued as followUp");
+{
+	// the "for N min" is measured at queue time; the stamp must carry an
+	// explicit timezone and be parseable so the agent can judge staleness later
+	const m = /as of (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2})/.exec(toolCalls.sendUserMessage[0]?.[0] ?? "");
+	ok(!!m && Math.abs(Date.now() - Date.parse(m[1])) < 120_000, "nudge stamps build time with explicit timezone");
+}
 await new Promise((r2) => setTimeout(r2, 1300));
 ok(toolCalls.sendUserMessage.length === 1, "dedupe holds across ticks");
 writeFileSync(`${DIR}/stuck.json`, JSON.stringify({ id: "stuck", label: "Stuck", done: 5, total: 10, updated: Math.floor(Date.now() / 1000) - 601 }));

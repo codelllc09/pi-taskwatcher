@@ -71,6 +71,12 @@ const run = (args, signal) => bashTool.execute("tc", args, signal, undefined);
 	ok(wake, "completion wake sent");
 	ok(wake[0].includes("exit 0"), "wake carries exit code");
 	ok(wake[0].includes("post"), "wake carries output tail");
+	{
+		// queue delay is unbounded; every wake must carry a parseable build-time
+		// stamp with an explicit timezone so the agent can judge its age
+		const m = /\(sent (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2})\)/.exec(wake[0]);
+		ok(!!m && Math.abs(Date.now() - Date.parse(m[1])) < 120_000, "wake carries sent-stamp with explicit timezone");
+	}
 	ok(wake[1]?.deliverAs === "followUp", "wake is queued (followUp)");
 	const logFiles = execFileSync("ls", [`${DIR}/bg`]).toString().trim().split("\n");
 	ok(logFiles.length === 1, "one bg log");

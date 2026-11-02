@@ -177,6 +177,24 @@ function fmtDur(ms: number): string {
 	return `${Math.floor(m / 60)}h${m % 60}m`;
 }
 
+/** Local wall clock with explicit UTC offset (ISO 8601), e.g. 2026-02-10T14:30:05+08:00.
+ *  Wake notices are queued (deliverAs "followUp") and may reach the agent long
+ *  after they are built; the stamp lets it measure a notice's true age.
+ *  Duplicated in taskwatcher.ts/wake.ts on purpose — the three modules share
+ *  nothing at runtime. */
+function stampNow(): string {
+	const d = new Date();
+	const p = (x: number) => String(x).padStart(2, "0");
+	const off = -d.getTimezoneOffset(); // minutes east of UTC (ISO sign)
+	const sign = off >= 0 ? "+" : "-";
+	const a = Math.abs(off);
+	return (
+		`${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}` +
+		`T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}` +
+		`${sign}${p(Math.floor(a / 60))}:${p(a % 60)}`
+	);
+}
+
 function killTree(pid: number) {
 	try {
 		process.kill(-pid, "SIGKILL"); // detached process group
@@ -199,7 +217,7 @@ function wake(pi: ExtensionAPI, key: string, msg: string) {
 			}
 			return;
 		}
-		pi.sendUserMessage(msg, { deliverAs: "followUp" });
+		pi.sendUserMessage(`${msg}\n(sent ${stampNow()})`, { deliverAs: "followUp" });
 	} catch (e) {
 		if (!wakeFailAnnounced.has(key)) {
 			wakeFailAnnounced.add(key);
