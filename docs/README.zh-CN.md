@@ -70,6 +70,12 @@ task_status.py done --id asr      # 还有：rm / ls
 （本地时钟 + 显式 UTC 偏移）：排队消息可能延迟很久才送达，时间戳
 让 agent 能判断消息里“N 分钟无进展”这类数字到底有多旧。
 
+排队通知的投递方式由 Pi 的 `followUpMode` 控制，默认 `"one-at-a-time"`
+逐条投递：三个任务完成就是三次独立唤醒、各自触发一轮响应。若想合并
+投递，在 `~/.pi/agent/settings.json` 里设置 `"followUpMode": "all"`——
+它是 `steeringMode` 的姊妹设置：后者只管插话（steer），管不到这些
+followUp 消息。
+
 自 v0.4.0 起唤醒集是**全部本会话任务**，不再只是渲染集中的：
 `PI_TASK_HIDE_MIN` 只淡出 chip，绝不把任务移出唤醒候选——挂了 35 分钟的
 任务和挂了 6 分钟的一样会被提醒（旧行为：挂得越久越没人提醒）。

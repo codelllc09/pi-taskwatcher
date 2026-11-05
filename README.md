@@ -75,6 +75,13 @@ local clock with an explicit UTC offset — because a queued message may reach
 the agent long after it was built; the stamp lets it judge how stale the
 "N min" figures in it really are.
 
+Queued notices are delivered by Pi's `followUpMode`, whose default
+`"one-at-a-time"` drains one notice per turn: three finished jobs wake the
+agent three separate times. Set `"followUpMode": "all"` in
+`~/.pi/agent/settings.json` to deliver the whole queue at once — note this
+is the companion of `steeringMode`, which only covers steering messages and
+does not affect these follow-ups.
+
 Since v0.4.0 the nudge set is **all own tasks**, not only the rendered ones:
 `PI_TASK_HIDE_MIN` fades the chip but never removes a task from the watchdog —
 a task hung for 35 min is nudged just like one hung for 6 min (previously the
